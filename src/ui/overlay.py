@@ -125,6 +125,9 @@ class VoiceOverlay:
         self.window.setContentView_(content)
         self.content = content
 
+        self.rainbow_segments = []
+        self._build_rainbow_border(width, height)
+
         self.status_chip = NSView.alloc().initWithFrame_(NSMakeRect(18, 50, 108, 24))
         self.status_chip.setWantsLayer_(True)
         self.status_chip.layer().setCornerRadius_(12.0)
@@ -281,6 +284,39 @@ class VoiceOverlay:
         self.detail_label.setStringValue_(self.state.detail)
         self._update_animation()
 
+    def _build_rainbow_border(self, width: float, height: float) -> None:
+        """Create small layer-backed border segments for the processing rainbow effect."""
+        thickness = 4.0
+        inset = 8.0
+        segment_specs = [
+            (inset + 18, height - thickness - 2, 54, thickness),
+            (inset + 76, height - thickness - 2, 54, thickness),
+            (inset + 134, height - thickness - 2, 54, thickness),
+            (inset + 192, height - thickness - 2, 54, thickness),
+            (inset + 250, height - thickness - 2, 54, thickness),
+            (inset + 308, height - thickness - 2, 54, thickness),
+            (width - inset - thickness - 2, 16, thickness, 18),
+            (width - inset - thickness - 2, 38, thickness, 18),
+            (width - inset - thickness - 2, 60, thickness, 18),
+            (inset + 308, 2, 54, thickness),
+            (inset + 250, 2, 54, thickness),
+            (inset + 192, 2, 54, thickness),
+            (inset + 134, 2, 54, thickness),
+            (inset + 76, 2, 54, thickness),
+            (inset + 18, 2, 54, thickness),
+            (2, 16, thickness, 18),
+            (2, 38, thickness, 18),
+            (2, 60, thickness, 18),
+        ]
+
+        for x, y, segment_width, segment_height in segment_specs:
+            segment = NSView.alloc().initWithFrame_(NSMakeRect(x, y, segment_width, segment_height))
+            segment.setWantsLayer_(True)
+            segment.layer().setCornerRadius_(min(segment_width, segment_height) / 2.0)
+            segment.setAlphaValue_(0.0)
+            self.content.addSubview_(segment)
+            self.rainbow_segments.append(segment)
+
     def _update_animation(self) -> None:
         """Pulse the status indicator while the agent is active."""
         if self.state.status == "processing":
@@ -290,5 +326,12 @@ class VoiceOverlay:
             self.dot_halo.setFrame_(NSMakeRect(origin, origin, scale, scale))
             self.dot_halo.layer().setCornerRadius_(scale / 2.0)
             self.dot_halo.setAlphaValue_(0.28 + (phase * 0.22))
+            for index, segment in enumerate(self.rainbow_segments):
+                hue = ((self._pulse_tick / 42.0) + (index / max(1, len(self.rainbow_segments)))) % 1.0
+                color = NSColor.colorWithCalibratedHue_saturation_brightness_alpha_(hue, 0.84, 0.98, 0.92)
+                segment.layer().setBackgroundColor_(color.CGColor())
+                segment.setAlphaValue_(0.88)
         else:
             self.dot_halo.setAlphaValue_(0.0)
+            for segment in self.rainbow_segments:
+                segment.setAlphaValue_(0.0)

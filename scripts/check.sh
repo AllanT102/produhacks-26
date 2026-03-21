@@ -20,6 +20,7 @@ python3 -m py_compile \
   src/tool_runtime/schemas.py \
   src/tool_runtime/tools/__init__.py \
   src/tool_runtime/tools/app.py \
+  src/tool_runtime/tools/browser.py \
   src/tool_runtime/tools/brightness.py \
   src/tool_runtime/tools/click.py \
   src/tool_runtime/tools/targets.py \

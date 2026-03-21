@@ -35,6 +35,10 @@ class MockExecutor:
         self.state.history.append({"tool": call.tool, "args": call.args})
 
         handlers = {
+            "browser_click_ref": self._browser_click_ref,
+            "browser_fill_ref": self._browser_fill_ref,
+            "browser_get_page": self._browser_get_page,
+            "browser_query": self._browser_query,
             "screenshot": self._screenshot,
             "click": self._click,
             "click_target": self._click_target,
@@ -81,6 +85,125 @@ class MockExecutor:
             if self.state.screen == "video_open":
                 return "Current screen: YouTube video page is open and playing."
         return "Current screen: unknown."
+
+    def _browser_get_page(self, call: ToolCall) -> ToolResult:
+        del call
+        if self.state.name == "youtube_search":
+            if self.state.screen in {"home", "search_focused"}:
+                return ToolResult(
+                    ok=True,
+                    tool="browser_get_page",
+                    result={"url": "https://www.youtube.com", "title": "YouTube"},
+                )
+            if self.state.screen == "results":
+                return ToolResult(
+                    ok=True,
+                    tool="browser_get_page",
+                    result={
+                        "url": f"https://www.youtube.com/results?search_query={self.state.typed_text.replace(' ', '+')}",
+                        "title": f"{self.state.typed_text} - YouTube",
+                    },
+                )
+        if self.state.name == "youtube_open_first":
+            if self.state.screen == "home":
+                return ToolResult(
+                    ok=True,
+                    tool="browser_get_page",
+                    result={
+                        "url": "https://www.youtube.com/results?search_query=handy+crab",
+                        "title": "handy crab - YouTube",
+                    },
+                )
+            if self.state.screen == "video_open":
+                return ToolResult(
+                    ok=True,
+                    tool="browser_get_page",
+                    result={"url": "https://www.youtube.com/watch?v=demo", "title": "Demo Video - YouTube"},
+                )
+        return ToolResult(ok=False, tool="browser_get_page", error={"code": "UNKNOWN", "message": "No mock page"})
+
+    def _browser_query(self, call: ToolCall) -> ToolResult:
+        query = str(call.args["query"]).lower()
+        if "search" in query and self.state.name == "youtube_search":
+            return ToolResult(
+                ok=True,
+                tool="browser_query",
+                result={
+                    "url": "https://www.youtube.com",
+                    "title": "YouTube",
+                    "matches": [
+                        {
+                            "ref": "mock-browser-search",
+                            "label": "Search",
+                            "role": "input",
+                            "bbox": {"x": 500, "y": 60, "width": 280, "height": 48},
+                            "center": {"x": 640, "y": 84},
+                            "score": 30,
+                        }
+                    ],
+                },
+            )
+        if "first" in query and self.state.screen == "results":
+            return ToolResult(
+                ok=True,
+                tool="browser_query",
+                result={
+                    "url": "https://www.youtube.com/results?search_query=demo",
+                    "title": "Demo - YouTube",
+                    "matches": [
+                        {
+                            "ref": "mock-browser-first-result",
+                            "label": "First result",
+                            "role": "link",
+                            "bbox": {"x": 340, "y": 180, "width": 440, "height": 80},
+                            "center": {"x": 560, "y": 220},
+                            "score": 30,
+                        }
+                    ],
+                },
+            )
+        return ToolResult(
+            ok=False,
+            tool="browser_query",
+            error={"code": "NOT_FOUND", "message": f"No mock browser match for query '{query}'"},
+        )
+
+    def _browser_click_ref(self, call: ToolCall) -> ToolResult:
+        ref = str(call.args["ref"])
+        if ref == "mock-browser-search":
+            self.state.screen = "search_focused"
+            self.state.focused = "search_input"
+            return ToolResult(ok=True, tool="browser_click_ref", result={"ref": ref, "label": "Search"})
+        if ref == "mock-browser-first-result":
+            self.state.screen = "video_open"
+            self.state.focused = None
+            return ToolResult(ok=True, tool="browser_click_ref", result={"ref": ref, "label": "First result"})
+        return ToolResult(
+            ok=False,
+            tool="browser_click_ref",
+            error={"code": "NOT_FOUND", "message": f"Unknown mock browser ref '{ref}'"},
+        )
+
+    def _browser_fill_ref(self, call: ToolCall) -> ToolResult:
+        ref = str(call.args["ref"])
+        text = str(call.args["text"])
+        submit = bool(call.args.get("submit", False))
+        if ref != "mock-browser-search":
+            return ToolResult(
+                ok=False,
+                tool="browser_fill_ref",
+                error={"code": "NOT_FOUND", "message": f"Unknown mock browser ref '{ref}'"},
+            )
+        self.state.typed_text = text
+        self.state.focused = "search_input"
+        if submit:
+            self.state.screen = "results"
+            self.state.focused = None
+        return ToolResult(
+            ok=True,
+            tool="browser_fill_ref",
+            result={"ref": ref, "text": text, "submit": submit},
+        )
 
     def _screenshot(self, call: ToolCall) -> ToolResult:
         del call

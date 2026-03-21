@@ -188,6 +188,68 @@ TOOLS = [
         },
     },
     {
+        "name": "browser_get_page",
+        "description": "Get the URL and title of the active Google Chrome tab.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "browser_query",
+        "description": (
+            "Find semantic elements in the active Google Chrome tab by visible text, aria-label, "
+            "placeholder, title, or role. Use this for webpage interactions before raw clicking."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "What webpage element to find, such as 'Subscribe button' or 'Search input'",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of matches to return",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "browser_click_ref",
+        "description": "Click a previously returned browser element reference from browser_query.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ref": {
+                    "type": "string",
+                    "description": "A DOM element reference returned by browser_query",
+                },
+            },
+            "required": ["ref"],
+        },
+    },
+    {
+        "name": "browser_fill_ref",
+        "description": "Fill a previously returned browser element reference from browser_query with text.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ref": {
+                    "type": "string",
+                    "description": "A DOM element reference returned by browser_query",
+                },
+                "text": {
+                    "type": "string",
+                    "description": "The text to type into the element",
+                },
+                "submit": {
+                    "type": "boolean",
+                    "description": "Whether to submit the field after filling it",
+                },
+            },
+            "required": ["ref", "text"],
+        },
+    },
+    {
         "name": "task_complete",
         "description": (
             "Signal that the user's goal has been fully achieved. "
