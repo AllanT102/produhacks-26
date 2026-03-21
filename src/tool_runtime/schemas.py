@@ -1,0 +1,141 @@
+"""Claude tool JSON schemas for the desktop action set.
+
+Tool names must exactly match the keys in src/tool_runtime/tools/REGISTRY
+so the planner can dispatch via execute_tool without any name mapping.
+"""
+
+TOOLS = [
+    {
+        "name": "screenshot",
+        "description": (
+            "Capture the current state of the screen. Always call this first to see "
+            "what is on screen before deciding on the next action."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "click",
+        "description": "Click a mouse button at the specified screen coordinates.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "integer", "description": "X coordinate in pixels"},
+                "y": {"type": "integer", "description": "Y coordinate in pixels"},
+                "button": {
+                    "type": "string",
+                    "enum": ["left", "right", "middle"],
+                    "description": "Mouse button to use (default: left)",
+                },
+            },
+            "required": ["x", "y"],
+        },
+    },
+    {
+        "name": "double_click",
+        "description": "Double-click at the specified screen coordinates.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "integer", "description": "X coordinate in pixels"},
+                "y": {"type": "integer", "description": "Y coordinate in pixels"},
+            },
+            "required": ["x", "y"],
+        },
+    },
+    {
+        "name": "scroll",
+        "description": "Scroll the content at the specified coordinates.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "integer", "description": "X coordinate to scroll at"},
+                "y": {"type": "integer", "description": "Y coordinate to scroll at"},
+                "direction": {
+                    "type": "string",
+                    "enum": ["up", "down"],
+                    "description": "Scroll direction",
+                },
+                "amount": {
+                    "type": "integer",
+                    "description": "Number of scroll steps (default: 5)",
+                },
+            },
+            "required": ["x", "y", "direction"],
+        },
+    },
+    {
+        "name": "type_text",
+        "description": "Type a string of text at the current cursor position.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Text to type"},
+            },
+            "required": ["text"],
+        },
+    },
+    {
+        "name": "key_press",
+        "description": (
+            "Press a keyboard key or hotkey combination. "
+            "Use '+' to join modifier keys (e.g. 'cmd+space', 'ctrl+c', 'enter')."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "key": {
+                    "type": "string",
+                    "description": "Key or hotkey combination (e.g. 'enter', 'cmd+tab', 'ctrl+c')",
+                },
+            },
+            "required": ["key"],
+        },
+    },
+    {
+        "name": "move_to",
+        "description": "Move the mouse cursor to the given coordinates without clicking.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "integer", "description": "X coordinate in pixels"},
+                "y": {"type": "integer", "description": "Y coordinate in pixels"},
+            },
+            "required": ["x", "y"],
+        },
+    },
+    {
+        "name": "drag",
+        "description": "Click and drag from one position to another.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "start_x": {"type": "integer", "description": "Drag start X coordinate"},
+                "start_y": {"type": "integer", "description": "Drag start Y coordinate"},
+                "end_x": {"type": "integer", "description": "Drag end X coordinate"},
+                "end_y": {"type": "integer", "description": "Drag end Y coordinate"},
+                "duration": {
+                    "type": "number",
+                    "description": "Drag duration in seconds (default: 0.5)",
+                },
+            },
+            "required": ["start_x", "start_y", "end_x", "end_y"],
+        },
+    },
+    {
+        "name": "task_complete",
+        "description": (
+            "Signal that the user's goal has been fully achieved. "
+            "Call this — and only this — when the task is done."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": "Brief description of what was accomplished",
+                },
+            },
+            "required": ["summary"],
+        },
+    },
+]
