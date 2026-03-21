@@ -39,6 +39,7 @@ class MockExecutor:
             "browser_fill_ref": self._browser_fill_ref,
             "browser_get_page": self._browser_get_page,
             "browser_query": self._browser_query,
+            "browser_scroll_to_text": self._browser_scroll_to_text,
             "screenshot": self._screenshot,
             "click": self._click,
             "click_target": self._click_target,
@@ -182,6 +183,27 @@ class MockExecutor:
             ok=False,
             tool="browser_click_ref",
             error={"code": "NOT_FOUND", "message": f"Unknown mock browser ref '{ref}'"},
+        )
+
+    def _browser_scroll_to_text(self, call: ToolCall) -> ToolResult:
+        text = str(call.args["text"])
+        if self.state.screen == "results" and "first" in text.lower():
+            return ToolResult(
+                ok=True,
+                tool="browser_scroll_to_text",
+                result={
+                    "text": text,
+                    "label": "First result",
+                    "tag": "a",
+                    "bbox": {"x": 340, "y": 180, "width": 440, "height": 80},
+                    "url": "https://www.youtube.com/results?search_query=demo",
+                    "title": "Demo - YouTube",
+                },
+            )
+        return ToolResult(
+            ok=False,
+            tool="browser_scroll_to_text",
+            error={"code": "NOT_FOUND", "message": f"No mock browser text match for '{text}'"},
         )
 
     def _browser_fill_ref(self, call: ToolCall) -> ToolResult:

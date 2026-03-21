@@ -20,6 +20,7 @@ _ACTION_TOOLS = {
     "open_app",
     "browser_click_ref",
     "browser_fill_ref",
+    "browser_scroll_to_text",
     "click",
     "click_target",
     "double_click",
@@ -33,6 +34,7 @@ _ACTION_TOOLS = {
 _BROWSER_ACTION_TOOLS = {
     "browser_click_ref",
     "browser_fill_ref",
+    "browser_scroll_to_text",
     "open_app",
 }
 
@@ -56,9 +58,11 @@ def _build_system_prompt() -> str:
         "Take one small action at a time.",
         "Use screenshot before acting when you need to inspect the UI.",
         "When the user asks to open an app or open a known website in a browser, prefer open_app instead of clicking around manually.",
-        "For webpage interactions in Google Chrome, prefer browser_get_page, browser_query, browser_click_ref, and browser_fill_ref over screenshot-based clicking.",
+        "For webpage interactions in Google Chrome, prefer browser_get_page, browser_query, browser_scroll_to_text, browser_click_ref, and browser_fill_ref over screenshot-based clicking.",
         "On YouTube in Chrome: use browser_query('Search input') to find the search field, browser_click_ref or browser_fill_ref to search, browser_query with the channel or result name to open the correct result, and browser_query('Subscribe button') plus browser_click_ref to subscribe.",
+        "For browser commands like 'scroll to step 2', 'go to FAQ', or 'jump to pricing', use browser_scroll_to_text with the visible text target instead of raw scroll or click.",
         "If browser_query returns a good match on a Chrome webpage, keep using browser_query and browser_click_ref/browser_fill_ref until the task is done. Do not fall back to screenshot unless the browser tools fail.",
+        "browser_click_ref and browser_fill_ref only accept exact refs returned by browser_query. Never invent a ref name like 'close popup' or 'search box'.",
         "Prefer propose_targets plus click_target over raw click coordinates whenever you need to select something visible on screen.",
         "Never guess coordinates. Ground every action in the visible screen.",
         "After any action that changes the UI, you will be shown an updated screenshot.",
@@ -179,6 +183,42 @@ def _search_goal_completed_in_browser(
     return f"Searched for '{query_text}' and the browser results page is now open."
 
 
+def _scroll_goal_completed_in_browser(
+    command_text: str,
+    action_calls: list[tuple[str, dict]],
+    tool_results: list[dict],
+) -> Optional[str]:
+    """Detect simple browser scroll-to-text goals that are already satisfied."""
+    normalized_goal = command_text.lower()
+    if "scroll to" not in normalized_goal and "jump to" not in normalized_goal and "go to" not in normalized_goal:
+        return None
+    if any(term in normalized_goal for term in ("click", "open", "subscribe", "search for", "type", "fill")):
+        return None
+    if not action_calls or action_calls[-1][0] != "browser_scroll_to_text":
+        return None
+
+    target_text = str(action_calls[-1][1].get("text") or "").strip()
+    if not target_text:
+        return None
+
+    for item in reversed(tool_results):
+        if item.get("type") != "tool_result":
+            continue
+        content = item.get("content")
+        if not isinstance(content, str):
+            continue
+        try:
+            payload = json.loads(content)
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        label = str(payload.get("label") or "")
+        if payload.get("ok") and target_text.lower() in label.lower():
+            return f"Scrolled the browser page to '{label.strip()}'."
+    return None
+
+
 def _settle_delay_for_actions(action_calls: list[tuple[str, dict]], browser_action: bool) -> float:
     """Use shorter settle delays so the loop feels responsive."""
     if not action_calls:
@@ -192,6 +232,8 @@ def _settle_delay_for_actions(action_calls: list[tuple[str, dict]], browser_acti
             delay = max(delay, 0.45 if inputs.get("submit") else 0.15)
         elif name == "browser_click_ref":
             delay = max(delay, 0.35)
+        elif name == "browser_scroll_to_text":
+            delay = max(delay, 0.25)
         elif name in {"click", "click_target", "double_click"}:
             delay = max(delay, 0.22)
         elif name == "key_press":
@@ -368,6 +410,15 @@ async def execute_command_with_tools(
                         "text": (
                             search_completion
                             + " If the user's goal was only to perform that search, call task_complete now."
+                        ),
+                    })
+                scroll_completion = _scroll_goal_completed_in_browser(command.text, action_calls, tool_results)
+                if scroll_completion:
+                    tool_results.append({
+                        "type": "text",
+                        "text": (
+                            scroll_completion
+                            + " If the user's goal was only to scroll to that section, call task_complete now."
                         ),
                     })
             post_action_verification_sent = True

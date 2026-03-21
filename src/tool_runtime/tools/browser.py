@@ -210,6 +210,135 @@ def browser_click_ref(ref: str) -> dict:
         return {"ok": False, "error": f"Chrome returned non-JSON output: {output[:200]}"}
 
 
+def browser_scroll_to_text(text: str) -> dict:
+    """Scroll the active Chrome tab until a visible text match is centered."""
+    js = f"""
+(() => {{
+  const query = {json.dumps(text)};
+  const q = query.toLowerCase().trim();
+  const qTokens = q.split(/\\s+/).filter(Boolean);
+
+  const tokenMatch = (hay, token) => {{
+    if (!hay || !token) return false;
+    if (/^[a-z0-9]{{1,2}}$/i.test(token)) {{
+      const escaped = token.replace(/[.*+?^${{}}()|[\\]\\\\]/g, '\\\\$&');
+      return new RegExp(`(^|\\\\b)${{escaped}}(\\\\b|$)`, 'i').test(hay);
+    }}
+    return hay.includes(token);
+  }};
+
+  const isVisible = (el) => {{
+    const rect = el.getBoundingClientRect();
+    const style = window.getComputedStyle(el);
+    return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+  }};
+
+  const labelFor = (el) => {{
+    return [
+      el.innerText,
+      el.getAttribute('aria-label'),
+      el.getAttribute('title'),
+      el.textContent,
+    ].filter(Boolean).map(s => s.trim()).find(Boolean) || '';
+  }};
+
+  const score = (label, tagName) => {{
+    const hay = (label || '').toLowerCase();
+    const tag = (tagName || '').toLowerCase();
+    let total = 0;
+    if (!hay) return total;
+    const matchedTokens = qTokens.filter((token) => tokenMatch(hay, token));
+    if (!hay.includes(q)) {{
+      if (qTokens.length >= 2 && matchedTokens.length < qTokens.length) return 0;
+      if (qTokens.length === 1 && matchedTokens.length === 0) return 0;
+    }}
+    if (hay === q) total += 60;
+    if (hay.includes(q)) total += 35;
+    for (const token of qTokens) {{
+      if (tokenMatch(hay, token)) total += 8;
+    }}
+    if (/^h[1-6]$/.test(tag)) total += 8;
+    if (tag === 'li') total += 6;
+    if (tag === 'summary' || tag === 'label') total += 5;
+    const lengthPenalty = Math.max(0, Math.floor(hay.length / 120));
+    return total - lengthPenalty;
+  }};
+
+  const selector = [
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'li', 'p', 'span', 'a', 'button', 'label',
+    'summary', 'dt', 'dd', 'code', 'pre',
+    '[role=\"heading\"]', '[role=\"button\"]', '[role=\"link\"]'
+  ].join(',');
+
+  const seen = new Set();
+  const matches = [];
+
+  for (const el of Array.from(document.querySelectorAll(selector))) {{
+    if (!isVisible(el)) continue;
+    const label = labelFor(el);
+    const candidateScore = score(label, el.tagName);
+    if (candidateScore <= 0) continue;
+    const rect = el.getBoundingClientRect();
+    const fingerprint = `${{label}}|${{el.tagName}}|${{Math.round(rect.left)}}|${{Math.round(rect.top)}}`;
+    if (seen.has(fingerprint)) continue;
+    seen.add(fingerprint);
+    matches.push({{
+      label,
+      tag: el.tagName.toLowerCase(),
+      score: candidateScore,
+      bbox: {{
+        x: Math.round(rect.left),
+        y: Math.round(rect.top),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      }},
+    }});
+  }}
+
+  matches.sort((a, b) => b.score - a.score);
+  const best = matches[0];
+  if (!best) return JSON.stringify({{ok: false, error: `No visible text match found for "${{query}}"`}});
+
+  const target = Array.from(document.querySelectorAll(selector)).find((el) => {{
+    if (!isVisible(el)) return false;
+    const rect = el.getBoundingClientRect();
+    const label = labelFor(el);
+    return (
+      label === best.label &&
+      Math.round(rect.left) === best.bbox.x &&
+      Math.round(rect.top) === best.bbox.y
+    );
+  }});
+
+  if (!target) return JSON.stringify({{ok: false, error: 'Matched element disappeared before scrolling'}});
+  target.scrollIntoView({{block: 'center', inline: 'nearest', behavior: 'instant'}});
+  const finalRect = target.getBoundingClientRect();
+  return JSON.stringify({{
+    ok: true,
+    text: query,
+    label: labelFor(target),
+    tag: target.tagName.toLowerCase(),
+    bbox: {{
+      x: Math.round(finalRect.left),
+      y: Math.round(finalRect.top),
+      width: Math.round(finalRect.width),
+      height: Math.round(finalRect.height),
+    }},
+    url: window.location.href,
+    title: document.title,
+  }});
+}})()
+"""
+    ok, output = _execute_chrome_javascript(js)
+    if not ok:
+        return _chrome_error(output)
+    try:
+        return json.loads(output)
+    except Exception:
+        return {"ok": False, "error": f"Chrome returned non-JSON output: {output[:200]}"}
+
+
 def browser_fill_ref(ref: str, text: str, submit: bool = False) -> dict:
     """Fill an input-like element previously identified by browser_query."""
     js = f"""

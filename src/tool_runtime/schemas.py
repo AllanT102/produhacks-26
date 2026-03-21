@@ -214,14 +214,34 @@ TOOLS = [
         },
     },
     {
+        "name": "browser_scroll_to_text",
+        "description": (
+            "Scroll the active Google Chrome tab until matching visible text is brought into view. "
+            "Use this for commands like 'scroll to step 2', 'go to pricing', or 'jump to FAQ'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": "Visible page text to scroll to, such as 'Step 2' or 'Pricing'",
+                },
+            },
+            "required": ["text"],
+        },
+    },
+    {
         "name": "browser_click_ref",
-        "description": "Click a previously returned browser element reference from browser_query.",
+        "description": (
+            "Click a previously returned browser element reference from browser_query. "
+            "The ref must exactly match a ref returned earlier by browser_query; never invent or paraphrase it."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "ref": {
                     "type": "string",
-                    "description": "A DOM element reference returned by browser_query",
+                    "description": "An exact DOM element ref returned by browser_query",
                 },
             },
             "required": ["ref"],
@@ -229,13 +249,16 @@ TOOLS = [
     },
     {
         "name": "browser_fill_ref",
-        "description": "Fill a previously returned browser element reference from browser_query with text.",
+        "description": (
+            "Fill a previously returned browser element reference from browser_query with text. "
+            "The ref must exactly match a ref returned earlier by browser_query; never invent or paraphrase it."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "ref": {
                     "type": "string",
-                    "description": "A DOM element reference returned by browser_query",
+                    "description": "An exact DOM element ref returned by browser_query",
                 },
                 "text": {
                     "type": "string",

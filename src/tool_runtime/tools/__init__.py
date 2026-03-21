@@ -4,7 +4,13 @@ from src.tool_runtime.tools.click import click, double_click
 from src.tool_runtime.tools.keyboard import key_press, type_text
 from src.tool_runtime.tools.mouse import drag, move_to
 from src.tool_runtime.tools.app import open_app
-from src.tool_runtime.tools.browser import browser_click_ref, browser_fill_ref, browser_get_page, browser_query
+from src.tool_runtime.tools.browser import (
+    browser_click_ref,
+    browser_fill_ref,
+    browser_get_page,
+    browser_query,
+    browser_scroll_to_text,
+)
 from src.tool_runtime.tools.brightness import set_brightness
 from src.tool_runtime.tools.screenshot import screenshot
 from src.tool_runtime.tools.scroll import scroll
@@ -26,6 +32,7 @@ REGISTRY: dict = {
     "open_app": open_app,
     "browser_get_page": browser_get_page,
     "browser_query": browser_query,
+    "browser_scroll_to_text": browser_scroll_to_text,
     "browser_click_ref": browser_click_ref,
     "browser_fill_ref": browser_fill_ref,
     "propose_targets": propose_targets,
