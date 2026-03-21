@@ -16,7 +16,15 @@ _MODEL = "claude-opus-4-6"
 _MAX_ITERATIONS = 20
 
 # Tools that act on the desktop and require a fresh screenshot beforehand.
-_ACTION_TOOLS = {"click", "double_click", "scroll", "type_text", "key_press", "move_to", "drag"}
+_ACTION_TOOLS = {
+    "click",
+    "double_click",
+    "scroll",
+    "type_text",
+    "key_press",
+    "move_to",
+    "drag",
+}
 
 
 def _make_client() -> anthropic.Anthropic:
@@ -27,11 +35,14 @@ def _build_system_prompt() -> str:
     w, h = pyautogui.size()
     return (
         f"You are a macOS desktop automation agent.\n"
-        f"Screen resolution: {w}x{h} pixels. All coordinates must be within this bounds.\n"
+        f"Screen resolution: {w}x{h} pixels. All coordinates must be within these bounds.\n"
         f"You will be shown a screenshot of the current screen before every action.\n"
         f"Use the pixel coordinates visible in the screenshot to determine where to click, "
-        f"scroll, or type. Never guess coordinates — always ground them in what you see.\n"
-        f"When the user's goal is fully achieved, call task_complete."
+        f"scroll, or type. Never guess coordinates — always ground them in what you see.\n\n"
+        f"IMPORTANT: After each action you will receive an updated screenshot. "
+        f"As soon as that screenshot shows the user's goal has been achieved, "
+        f"you MUST immediately call task_complete with a short summary. "
+        f"Do not take any further actions or screenshots after the goal is visible on screen."
     )
 
 
@@ -50,7 +61,9 @@ def _screenshot_image_block() -> dict:
     }
 
 
-async def execute_command(command: AgentCommand, max_iterations: int = _MAX_ITERATIONS) -> str:
+async def execute_command(
+    command: AgentCommand, max_iterations: int = _MAX_ITERATIONS
+) -> str:
     """Run the agentic loop for a single voice command.
 
     Always injects a screenshot into the first user message and after every
@@ -113,11 +126,13 @@ async def execute_command(command: AgentCommand, max_iterations: int = _MAX_ITER
 
             if name == "task_complete":
                 summary = inputs.get("summary", "Task complete.")
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": summary,
-                })
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": summary,
+                    }
+                )
                 finished = True
                 continue
 
@@ -126,33 +141,38 @@ async def execute_command(command: AgentCommand, max_iterations: int = _MAX_ITER
             )
 
             if name == "screenshot" and result.ok and result.result:
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": result.result["media_type"],
-                                "data": result.result["data"],
-                            },
-                        }
-                    ],
-                })
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": result.result["media_type"],
+                                    "data": result.result["data"],
+                                },
+                            }
+                        ],
+                    }
+                )
             else:
                 if name in _ACTION_TOOLS:
                     ran_action = True
                 payload = result.result if result.ok else result.error
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": json.dumps(payload),
-                })
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": json.dumps(payload),
+                    }
+                )
 
         # After any action tool, automatically append a fresh screenshot so
         # Claude sees the updated screen state before its next reasoning step.
         if ran_action and not finished:
+            await asyncio.sleep(0.5)  # let the UI settle before capturing
             print("[planner] capturing post-action screenshot")
             post_shot = await asyncio.to_thread(_screenshot_image_block)
             tool_results.append({"type": "text", "text": "Screen after your actions:"})
@@ -170,6 +190,7 @@ async def execute_command(command: AgentCommand, max_iterations: int = _MAX_ITER
 # ---------------------------------------------------------------------------
 # Legacy synchronous shim kept for any callers that import the old interface.
 # ---------------------------------------------------------------------------
+
 
 def plan_from_transcript(text: str) -> dict:
     """Deprecated: returns a stub plan. Use execute_command() instead."""
