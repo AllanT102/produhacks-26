@@ -1,0 +1,1 @@
+"""Continuous transcription service placeholder."""

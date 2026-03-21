@@ -1,0 +1,1 @@
+"""Click tool placeholder."""
