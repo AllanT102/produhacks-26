@@ -38,24 +38,62 @@ The transcription layer now includes:
 - `src/transcription/service.py`
   Always-on loop that emits partial and final transcript events and forwards final commands to the agent queue
 
-## Running The Skeleton
+## Dev Shortcuts
 
-Install dependencies:
+You can use either `make` or the shell scripts in `scripts/`.
+
+### Setup
 
 ```bash
-pip install -r requirements.txt
+make setup
 ```
 
-Quick smoke test with the mock backend:
+or
 
 ```bash
-python3 -m src.main
+./scripts/setup.sh
 ```
 
-Use the real local Whisper backend:
+### Syntax check
 
 ```bash
-TRANSCRIPTION_BACKEND=faster-whisper WHISPER_MODEL_SIZE=base python3 -m src.main
+make check
+```
+
+or
+
+```bash
+./scripts/check.sh
+```
+
+### Run with mock backend
+
+```bash
+make run-mock
+```
+
+or
+
+```bash
+./scripts/run_mock.sh
+```
+
+### Run with local Whisper backend
+
+```bash
+make run-whisper
+```
+
+or
+
+```bash
+./scripts/run_whisper.sh
+```
+
+To use a different model size:
+
+```bash
+WHISPER_MODEL_SIZE=small make run-whisper
 ```
 
 The app entry point logs transcript events and sends finalized commands into a simple agent loop.
@@ -65,9 +103,7 @@ The app entry point logs transcript events and sends finalized commands into a s
 ### 1. Install dependencies
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+make setup
 ```
 
 ### 2. Smoke test the wiring
@@ -75,13 +111,13 @@ pip install -r requirements.txt
 This proves the app boots and the event plumbing works:
 
 ```bash
-python3 -m py_compile src/main.py src/agent/loop.py src/transcription/*.py src/shared/events.py
+make check
 ```
 
 ### 3. Run with the real local backend
 
 ```bash
-TRANSCRIPTION_BACKEND=faster-whisper WHISPER_MODEL_SIZE=base python3 -m src.main
+make run-whisper
 ```
 
 Then:
@@ -97,7 +133,7 @@ Then:
 You can run:
 
 ```bash
-python3 -m src.main
+make run-mock
 ```
 
 That uses the mock backend. It is only useful for checking startup and queue wiring, not transcription quality.
