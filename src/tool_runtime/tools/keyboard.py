@@ -1,18 +1,12 @@
 """Keyboard tools."""
 
+import time
+
 import pyautogui
+import pyperclip
 
 pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0.05
-
-
-def type_text(text: str) -> dict:
-    """Type a string of text at the current cursor position."""
-    try:
-        pyautogui.typewrite(text, interval=0.03)
-        return {"ok": True, "text": text}
-    except Exception as exc:
-        return {"ok": False, "error": str(exc)}
 
 
 def key_press(key: str) -> dict:
@@ -24,5 +18,26 @@ def key_press(key: str) -> dict:
         else:
             pyautogui.press(key)
         return {"ok": True, "key": key}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def type_text(text: str, clear_first: bool = False) -> dict:
+    """Type text using clipboard paste, then press enter."""
+    try:
+        # Cant use .hotkey because of macos timing causing it to mistime the command and type the letter
+        if clear_first:
+            pyautogui.keyDown("command")
+            pyautogui.press("a")
+            pyautogui.keyUp("command")
+            pyautogui.press("delete")
+            time.sleep(0.1)
+        pyperclip.copy(text)
+        time.sleep(0.1)
+        pyautogui.keyDown("command")
+        pyautogui.press("v")
+        pyautogui.keyUp("command")
+        pyautogui.press("enter")
+        return {"ok": True, "text": text}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}

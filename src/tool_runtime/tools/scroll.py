@@ -1,4 +1,4 @@
-"""Scroll tool using small-step macOS pattern."""
+"""Scroll tool."""
 
 import time
 
@@ -8,12 +8,19 @@ pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0.05
 
 
+def _validate(x: int, y: int) -> tuple:
+    w, h = pyautogui.size()
+    if not (0 <= x <= w and 0 <= y <= h):
+        return False, f"Coordinates ({x}, {y}) out of screen bounds ({w}x{h})"
+    return True, None
+
+
 def scroll(x: int, y: int, direction: str = "down", amount: int = 5) -> dict:
     """Scroll at (x, y) in small steps for macOS smoothness."""
     try:
-        w, h = pyautogui.size()
-        if not (0 <= x <= w and 0 <= y <= h):
-            return {"ok": False, "error": f"Coordinates ({x}, {y}) out of screen bounds ({w}x{h})"}
+        ok, err = _validate(x, y)
+        if not ok:
+            return {"ok": False, "error": err}
         pyautogui.moveTo(x, y)
         step = -1 if direction == "down" else 1
         for _ in range(amount):
