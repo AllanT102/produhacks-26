@@ -1,7 +1,5 @@
 """Scroll tool."""
 
-import time
-
 import pyautogui
 
 pyautogui.FAILSAFE = True
@@ -16,16 +14,14 @@ def _validate(x: int, y: int) -> tuple:
 
 
 def scroll(x: int, y: int, direction: str = "down", amount: int = 5) -> dict:
-    """Scroll at (x, y) in small steps for macOS smoothness."""
+    """Scroll at (x, y) by amount clicks."""
     try:
         ok, err = _validate(x, y)
         if not ok:
             return {"ok": False, "error": err}
         pyautogui.moveTo(x, y)
-        step = -1 if direction == "down" else 1
-        for _ in range(amount):
-            pyautogui.scroll(step)
-            time.sleep(0.02)
+        clicks = -amount if direction == "down" else amount
+        pyautogui.scroll(clicks)
         return {"ok": True, "x": x, "y": y, "direction": direction, "amount": amount}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
