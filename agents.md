@@ -27,14 +27,14 @@ Responsibilities:
 - capture microphone audio continuously
 - produce partial and final transcripts
 - detect likely command boundaries
-- forward finalized commands to `Antique Hornet`
+- forward finalized commands to the planner
 - stay simple and always-on for the hackathon version
 
 This layer is not the reasoning agent. Its job is to turn raw speech into structured utterance events that the planner can consume.
 
-### 1. Antique Hornet
+### 1. Planner
 
-`Antique Hornet` is the reasoning and planning agent.
+The planner is the reasoning layer.
 
 Responsibilities:
 
@@ -48,9 +48,9 @@ Responsibilities:
 
 This agent should not directly contain platform-specific automation code. It should produce structured tool calls against a stable API.
 
-### 2. Handy Crab
+### 2. Executor
 
-`Handy Crab` is the execution layer.
+The executor is the automation layer.
 
 Responsibilities:
 
@@ -67,10 +67,10 @@ This layer is the bridge to the operating system. It owns coordinate systems, ac
 1. User speaks a command.
 2. The always-on transcription runtime captures audio and emits partial transcript updates.
 3. When the utterance is complete, the transcription runtime emits a final transcript event.
-4. `Antique Hornet` receives the final transcript plus recent task context.
-5. `Antique Hornet` calls perception tools to inspect the current screen.
-6. `Antique Hornet` plans one small next step.
-7. `Handy Crab` executes the requested tool call.
+4. The planner receives the final transcript plus recent task context.
+5. The planner calls perception tools to inspect the current screen.
+6. The planner plans one small next step.
+7. The executor executes the requested tool call.
 8. The system re-checks the screen if the action changed UI state.
 9. The loop repeats until success, failure, or escalation.
 
@@ -135,8 +135,8 @@ The always-on listener should not decide UI actions itself. It should only:
 This keeps the architecture clean:
 
 - transcription runtime handles audio
-- `Antique Hornet` handles reasoning
-- `Handy Crab` handles execution
+- planner handles reasoning
+- executor handles execution
 
 ## Key Use Cases
 
@@ -186,7 +186,7 @@ This requires:
 
 ## Agent State
 
-The reasoning agent should keep a small working memory:
+The planner should keep a small working memory:
 
 - latest transcript
 - transcript id
@@ -217,7 +217,7 @@ Recovery strategy:
 
 ## Suggested Agent Contract
 
-The reasoning layer should emit actions in a structured format like:
+The planner should emit actions in a structured format like:
 
 ```json
 {
@@ -232,7 +232,7 @@ The reasoning layer should emit actions in a structured format like:
 }
 ```
 
-The transcription runtime should hand work to the reasoning layer in a structured format like:
+The transcription runtime should hand work to the planner in a structured format like:
 
 ```json
 {
@@ -275,7 +275,7 @@ Out of scope for v1:
 
 ## Implementation Note
 
-Treat `Antique Hornet` as a planner over an explicit tool API and `Handy Crab` as a deterministic Mac automation runtime. This separation keeps prompts stable, makes tool behavior testable, and allows the execution layer to be swapped later.
+Treat the planner as a reasoning layer over an explicit tool API and the executor as a deterministic Mac automation runtime. This separation keeps prompts stable, makes tool behavior testable, and allows the execution layer to be swapped later.
 
 For the hackathon build, assume the microphone listener is active for the full app session and forwards finalized utterances immediately.
 

@@ -1,5 +1,7 @@
 # Example Flows
 
+These examples assume the current v1 architecture where perception and action remain separate tool calls. Some flows are more verbose than a future optimized version, but they are easier to build, test, and debug now.
+
 ## 1. Search YouTube For A Video
 
 Voice command:
@@ -120,7 +122,7 @@ Voice command:
 
 `pause`
 
-Preferred action:
+Possible v1 action:
 
 ```json
 {
@@ -132,7 +134,7 @@ Preferred action:
 }
 ```
 
-Fallback if keyboard shortcut does not work:
+Possible fallback:
 
 ```json
 [
@@ -187,7 +189,7 @@ This is a planner concern, not a primitive tool concern.
 If you later prompt the reasoning agent directly, a good shape is:
 
 ```text
-You are Antique Hornet, a screen-aware planner for Mac control.
+You are a screen-aware planner for Mac control.
 You can only act by calling the provided tools.
 Take one small action at a time.
 After each action that may change the UI, verify the screen again.
@@ -195,3 +197,5 @@ Prefer keyboard shortcuts when they are reliable.
 If target confidence is low, inspect the screen instead of guessing.
 The user goal is: <voice transcript here>
 ```
+
+For v1, it is fine if a single task requires several primitive tool calls such as capture, analyze, find, and click. Merged tools can be added later without changing the planner's high-level loop.

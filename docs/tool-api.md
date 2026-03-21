@@ -4,6 +4,10 @@
 
 This document defines the execution API that the reasoning agent calls to control the Mac. These tools are intentionally low-level. The planner composes them into higher-level behaviors.
 
+For v1, keep perception and action tools separate so the team can build and test each piece independently. It is acceptable if the common loop is temporarily more verbose.
+
+Later, if latency or cost becomes a problem, these primitives can be merged behind the same planner-facing contract into combined tools such as "observe and click" or "observe and type". That optimization is explicitly deferred for now.
+
 ## Conventions
 
 ### Response envelope
@@ -325,6 +329,21 @@ This is enough to support:
 - result clicking
 - pause and fullscreen shortcuts
 
+This minimal set is intentionally primitive. The first implementation should optimize for clarity and parallel development, not for the fewest possible round trips.
+
+## v1 Implementation Note
+
+For the current build, assume:
+
+- screenshot capture remains a separate tool call
+- screen analysis remains a separate tool call
+- target finding remains a separate tool call
+- actions such as click, scroll, type, and key press remain separate tool calls
+
+This makes it easier for different developers to work on perception and execution independently.
+
+Merged tools are a later optimization, not a v1 requirement.
+
 ## Error Codes
 
 Suggested normalized error codes:
@@ -347,3 +366,5 @@ The reasoning agent should prefer this loop:
 4. verify
 
 It should avoid issuing more than one irreversible action without re-checking the screen.
+
+In v1, that may mean multiple separate tool calls for a single user intent. That is acceptable. Once the primitive tools are stable, the same loop can be accelerated by combining repeated perception and action sequences inside the executor.
