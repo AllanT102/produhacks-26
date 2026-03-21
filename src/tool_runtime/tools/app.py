@@ -1,6 +1,7 @@
 """App launcher tool."""
 
 import subprocess
+from typing import Optional
 
 
 # Common app name aliases so the agent can use natural names
@@ -22,18 +23,27 @@ ALIASES: dict[str, str] = {
 }
 
 
-def open_app(app: str) -> dict:
+def open_app(app: str, url: Optional[str] = None) -> dict:
     """
-    Open an application by name.
+    Open an application by name, optionally with a URL.
 
     Args:
         app: App name or alias (e.g. "chrome", "Spotify", "discord")
+        url: Optional URL to open with the app
     """
     resolved = ALIASES.get(app.lower(), app)
     try:
-        subprocess.run(["open", "-a", resolved], check=True)
-        return {"ok": True, "app": resolved}
+        cmd = ["open", "-a", resolved]
+        if url:
+            cmd.append(url)
+        subprocess.run(cmd, check=True)
+        result = {"ok": True, "app": resolved}
+        if url:
+            result["url"] = url
+        return result
     except subprocess.CalledProcessError:
+        if url:
+            return {"ok": False, "error": f"Could not open '{resolved}' with '{url}' — is it installed?"}
         return {"ok": False, "error": f"Could not open '{resolved}' — is it installed?"}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}

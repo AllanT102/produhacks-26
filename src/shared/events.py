@@ -1,5 +1,6 @@
 """Shared event types."""
 
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Literal, Optional
 
@@ -32,3 +33,10 @@ class AgentCommand:
     transcript_id: str
     text: str
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class UIEvent:
+    type: Literal["transcript", "agent_status"]
+    payload: Dict[str, Any]
+    timestamp: float = field(default_factory=time.time)

@@ -31,6 +31,51 @@ TOOLS = [
         },
     },
     {
+        "name": "propose_targets",
+        "description": (
+            "Find likely UI targets for a semantic query by merging local accessibility, OCR, "
+            "and Dock/app-icon candidates. Prefer this before raw click coordinates when you "
+            "need to click something visible on screen."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "What target to find, e.g. 'Slack icon', 'Directories folder', 'first file'",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of candidates to return",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "click_target",
+        "description": "Click a previously proposed target by target_id instead of guessing coordinates.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target_id": {
+                    "type": "string",
+                    "description": "A target id returned from propose_targets",
+                },
+                "button": {
+                    "type": "string",
+                    "enum": ["left", "right", "middle"],
+                    "description": "Mouse button to use (default: left)",
+                },
+                "click_count": {
+                    "type": "integer",
+                    "description": "1 for click, 2 for double-click",
+                },
+            },
+            "required": ["target_id"],
+        },
+    },
+    {
         "name": "double_click",
         "description": "Double-click at the specified screen coordinates.",
         "input_schema": {
@@ -119,6 +164,27 @@ TOOLS = [
                 },
             },
             "required": ["start_x", "start_y", "end_x", "end_y"],
+        },
+    },
+    {
+        "name": "open_app",
+        "description": (
+            "Open an application by name. Optionally provide a URL to open directly in that app, "
+            "for example opening Google Chrome to https://youtube.com."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "app": {
+                    "type": "string",
+                    "description": "App name or alias such as 'chrome', 'slack', or 'finder'",
+                },
+                "url": {
+                    "type": "string",
+                    "description": "Optional URL to open in the app, such as 'https://youtube.com'",
+                },
+            },
+            "required": ["app"],
         },
     },
     {

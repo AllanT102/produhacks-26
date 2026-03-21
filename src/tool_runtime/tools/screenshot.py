@@ -23,6 +23,6 @@ def screenshot() -> dict:
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         data = base64.b64encode(buf.getvalue()).decode("utf-8")
-        return {"ok": True, "data": data, "media_type": "image/png"}
+        return {"ok": True, "data": data, "media_type": "image/png", "width": logical_w, "height": logical_h}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
