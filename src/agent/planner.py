@@ -17,13 +17,12 @@ _MAX_CONSECUTIVE_NON_ACTION_ROUNDS = 2
 
 _ACTION_TOOLS = {
     "click",
-    "click_target",
-    "double_click",
-    "scroll",
     "type_text",
+    "scroll",
     "key_press",
-    "move_to",
-    "drag",
+    "navigate",
+    "open_tab",
+    "close_tab",
 }
 
 ToolExecutor = Callable[[ToolCall], ToolResult]
@@ -35,27 +34,19 @@ def _make_client() -> anthropic.Anthropic:
 
 def _build_system_prompt() -> str:
     base = [
-        "You are a macOS desktop automation agent.",
-        "You can only act by calling the provided tools.",
+        "You are a Chrome browser automation agent controlled by voice.",
+        "You control a real Chrome browser using Playwright. You can only act by calling the provided tools.",
         "Take one small action at a time.",
-        "Use screenshot before acting when you need to inspect the UI.",
-        "When the user asks to open an app or open a known website in a browser, prefer open_app instead of clicking around manually.",
-        "Prefer propose_targets plus click_target over raw click coordinates whenever you need to select something visible on screen.",
-        "Never guess coordinates. Ground every action in the visible screen.",
-        "After any action that changes the UI, you will be shown an updated screenshot.",
+        "Workflow: screenshot → identify → act → screenshot to verify → task_complete",
+        "Element targeting: use click(description=...) first. If ambiguous, call find_elements first then click(element_id=...).",
+        "Navigation: use navigate(url=...) to go to a URL, or key_press('cmd+l') to focus the address bar.",
+        "Typing: use type_text(description='label or placeholder', text='...') to fill inputs.",
+        "Shortcuts: 'cmd+t' new tab, 'cmd+w' close tab, 'cmd+l' address bar, 'cmd+r' reload, 'cmd+f' find on page.",
+        "After any action that changes the page, you will be shown an updated screenshot.",
         "As soon as that updated screenshot shows the user's goal is achieved, you MUST immediately call task_complete.",
         "Do not request another screenshot right after a post-action screenshot unless the screenshot was missing or unusable.",
         "If the goal is already visible on screen, finish immediately with task_complete instead of taking more actions.",
     ]
-
-    try:
-        import pyautogui
-
-        width, height = pyautogui.size()
-        base.append(f"Screen resolution: {width}x{height} pixels. Keep coordinates within those bounds.")
-    except Exception:
-        pass
-
     return "\n".join(base)
 
 

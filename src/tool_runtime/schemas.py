@@ -1,4 +1,4 @@
-"""Claude tool JSON schemas for the desktop action set.
+"""Claude tool JSON schemas for the Chrome browser action set.
 
 Tool names must exactly match the keys in src/tool_runtime/tools/REGISTRY
 so the planner can dispatch via execute_tool without any name mapping.
@@ -8,183 +8,214 @@ TOOLS = [
     {
         "name": "screenshot",
         "description": (
-            "Capture the current state of the screen. Always call this first to see "
-            "what is on screen before deciding on the next action."
+            "Capture the current state of the Chrome browser viewport. "
+            "Call this first to see what is on screen before deciding on the next action."
         ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
-        "name": "click",
-        "description": "Click a mouse button at the specified screen coordinates.",
+        "name": "navigate",
+        "description": "Navigate to a URL or move through browser history.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "x": {"type": "integer", "description": "X coordinate in pixels"},
-                "y": {"type": "integer", "description": "Y coordinate in pixels"},
-                "button": {
+                "url": {
                     "type": "string",
-                    "enum": ["left", "right", "middle"],
-                    "description": "Mouse button to use (default: left)",
+                    "description": "Absolute URL to navigate to, e.g. 'https://google.com'",
+                },
+                "direction": {
+                    "type": "string",
+                    "enum": ["back", "forward"],
+                    "description": "Go back or forward in browser history",
                 },
             },
-            "required": ["x", "y"],
+            "required": [],
         },
     },
     {
-        "name": "propose_targets",
+        "name": "find_elements",
         "description": (
-            "Find likely UI targets for a semantic query by merging local accessibility, OCR, "
-            "and Dock/app-icon candidates. Prefer this before raw click coordinates when you "
-            "need to click something visible on screen."
+            "Find DOM elements on the page matching a semantic query. "
+            "Use this when click() is ambiguous — it returns element_ids you can pass to click()."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "What target to find, e.g. 'Slack icon', 'Directories folder', 'first file'",
+                    "description": "Text, label, or description of the element to find",
+                },
+                "role": {
+                    "type": "string",
+                    "description": "Optional ARIA role to narrow the search, e.g. 'button', 'textbox', 'link'",
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Maximum number of candidates to return",
+                    "description": "Maximum number of results to return (default 10)",
                 },
             },
             "required": ["query"],
         },
     },
     {
-        "name": "click_target",
-        "description": "Click a previously proposed target by target_id instead of guessing coordinates.",
+        "name": "click",
+        "description": (
+            "Click a DOM element identified by description or element_id. "
+            "Try description first; use find_elements + element_id when there are multiple matches."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "target_id": {
+                "description": {
                     "type": "string",
-                    "description": "A target id returned from propose_targets",
+                    "description": "Human-readable label, text, or placeholder of the element to click",
+                },
+                "element_id": {
+                    "type": "string",
+                    "description": "element_id from a prior find_elements call",
+                },
+                "role": {
+                    "type": "string",
+                    "description": "ARIA role to narrow the search, e.g. 'button', 'link'",
+                },
+                "index": {
+                    "type": "integer",
+                    "description": "0-based index when multiple matches exist (default 0)",
                 },
                 "button": {
                     "type": "string",
                     "enum": ["left", "right", "middle"],
-                    "description": "Mouse button to use (default: left)",
+                    "description": "Mouse button (default: left)",
                 },
-                "click_count": {
-                    "type": "integer",
-                    "description": "1 for click, 2 for double-click",
-                },
-            },
-            "required": ["target_id"],
-        },
-    },
-    {
-        "name": "double_click",
-        "description": "Double-click at the specified screen coordinates.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "x": {"type": "integer", "description": "X coordinate in pixels"},
-                "y": {"type": "integer", "description": "Y coordinate in pixels"},
-            },
-            "required": ["x", "y"],
-        },
-    },
-    {
-        "name": "scroll",
-        "description": "Scroll the content at the specified coordinates.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "x": {"type": "integer", "description": "X coordinate to scroll at"},
-                "y": {"type": "integer", "description": "Y coordinate to scroll at"},
-                "direction": {
-                    "type": "string",
-                    "enum": ["up", "down"],
-                    "description": "Scroll direction",
-                },
-                "amount": {
-                    "type": "integer",
-                    "description": "Number of scroll steps (default: 5)",
+                "double": {
+                    "type": "boolean",
+                    "description": "True to double-click",
                 },
             },
-            "required": ["x", "y", "direction"],
+            "required": [],
         },
     },
     {
         "name": "type_text",
-        "description": "Type a string of text at the current cursor position.",
+        "description": "Type text into an input field or at the current keyboard focus.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "text": {"type": "string", "description": "Text to type"},
+                "text": {
+                    "type": "string",
+                    "description": "Text to type",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Label, placeholder, or name of the input field to type into",
+                },
+                "clear_first": {
+                    "type": "boolean",
+                    "description": "Replace existing value if True (default True)",
+                },
+                "press_enter": {
+                    "type": "boolean",
+                    "description": "Press Enter after typing (default False)",
+                },
             },
             "required": ["text"],
         },
     },
     {
+        "name": "scroll",
+        "description": "Scroll the page or scroll a specific element into view.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "direction": {
+                    "type": "string",
+                    "enum": ["up", "down", "left", "right"],
+                    "description": "Scroll direction (default: down)",
+                },
+                "amount": {
+                    "type": "integer",
+                    "description": "Pixel distance to scroll (default 300)",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "If provided, scroll this element into view instead of the page",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "key_press",
         "description": (
-            "Press a keyboard key or hotkey combination. "
-            "Use '+' to join modifier keys (e.g. 'cmd+space', 'ctrl+c', 'enter')."
+            "Press a keyboard key or shortcut combination. "
+            "Use '+' to join modifiers, e.g. 'cmd+t', 'cmd+l', 'escape', 'enter'."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "key": {
                     "type": "string",
-                    "description": "Key or hotkey combination (e.g. 'enter', 'cmd+tab', 'ctrl+c')",
+                    "description": "Key or combo, e.g. 'enter', 'cmd+t', 'cmd+l', 'escape'",
                 },
             },
             "required": ["key"],
         },
     },
     {
-        "name": "move_to",
-        "description": "Move the mouse cursor to the given coordinates without clicking.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "x": {"type": "integer", "description": "X coordinate in pixels"},
-                "y": {"type": "integer", "description": "Y coordinate in pixels"},
-            },
-            "required": ["x", "y"],
-        },
-    },
-    {
-        "name": "drag",
-        "description": "Click and drag from one position to another.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "start_x": {"type": "integer", "description": "Drag start X coordinate"},
-                "start_y": {"type": "integer", "description": "Drag start Y coordinate"},
-                "end_x": {"type": "integer", "description": "Drag end X coordinate"},
-                "end_y": {"type": "integer", "description": "Drag end Y coordinate"},
-                "duration": {
-                    "type": "number",
-                    "description": "Drag duration in seconds (default: 0.5)",
-                },
-            },
-            "required": ["start_x", "start_y", "end_x", "end_y"],
-        },
-    },
-    {
-        "name": "open_app",
+        "name": "get_page_info",
         "description": (
-            "Open an application by name. Optionally provide a URL to open directly in that app, "
-            "for example opening Google Chrome to https://youtube.com."
+            "Return the current page URL, title, and a text excerpt. "
+            "Use this as a lightweight alternative to screenshot when you only need metadata."
         ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "open_tab",
+        "description": "Open a new browser tab, optionally navigating to a URL.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "app": {
-                    "type": "string",
-                    "description": "App name or alias such as 'chrome', 'slack', or 'finder'",
-                },
                 "url": {
                     "type": "string",
-                    "description": "Optional URL to open in the app, such as 'https://youtube.com'",
+                    "description": "URL to open in the new tab",
                 },
             },
-            "required": ["app"],
+            "required": [],
+        },
+    },
+    {
+        "name": "close_tab",
+        "description": "Close the current browser tab and switch to the last remaining page.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "set_volume",
+        "description": "Adjust macOS system volume.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["up", "down", "mute", "unmute"],
+                    "description": "Volume action to perform",
+                },
+            },
+            "required": ["action"],
+        },
+    },
+    {
+        "name": "set_brightness",
+        "description": "Adjust macOS display brightness.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["up", "down"],
+                    "description": "Brightness direction",
+                },
+            },
+            "required": ["action"],
         },
     },
     {

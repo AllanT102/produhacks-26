@@ -1,9 +1,17 @@
+# Core agent
+anthropic>=0.25.0
+
+# Browser automation
+playwright>=1.44.0
+
+# Voice / transcription
 faster-whisper>=1.1.0
 sounddevice>=0.4.6
-anthropic>=0.25.0
-pyautogui>=0.9.54
-Pillow>=10.0.0
+
+# macOS UI overlay
 pyobjc-core
-pyobjc-framework-Quartz
 pyobjc-framework-Cocoa>=10.3
-pyobjc-framework-Vision
+pyobjc-framework-Quartz
+
+# Image processing (used in planner for screenshot handling)
+Pillow>=10.0.0
