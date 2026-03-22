@@ -9,7 +9,14 @@ def canonicalize_command_text(text: str) -> str:
     if not normalized:
         return normalized
 
-    parts = [part.strip(" .!?") for part in re.split(r"[.!?]+", normalized) if part.strip(" .!?")]
+    parts = []
+    for raw_part in re.split(r"[.!?]+", normalized):
+        part = raw_part.strip(" \t\r\n.,!?;:()[]{}\"'")
+        if not part:
+            continue
+        if not re.search(r"[A-Za-z0-9@]", part):
+            continue
+        parts.append(part)
     if not parts:
         return normalized
 

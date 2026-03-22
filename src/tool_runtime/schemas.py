@@ -193,6 +193,37 @@ TOOLS = [
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
+        "name": "browser_extract_text",
+        "description": (
+            "Extract readable text from the active Google Chrome tab for read-aloud and voice feedback. "
+            "Supports page-level text, the current selection, the headline, or the first paragraph."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "scope": {
+                    "type": "string",
+                    "enum": ["page", "selection", "headline", "first_paragraph", "focus"],
+                    "description": "Which part of the page to extract",
+                },
+                "fallback_scope": {
+                    "type": "string",
+                    "enum": ["", "page", "selection", "headline", "first_paragraph", "focus"],
+                    "description": "Optional fallback scope if the requested scope is empty",
+                },
+                "max_blocks": {
+                    "type": "integer",
+                    "description": "Maximum number of content blocks to include when extracting page text",
+                },
+                "max_chars": {
+                    "type": "integer",
+                    "description": "Maximum number of characters to return",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "browser_query",
         "description": (
             "Find semantic elements in the active Google Chrome tab by visible text, aria-label, "

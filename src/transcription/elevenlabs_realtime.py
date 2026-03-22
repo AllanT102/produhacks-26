@@ -11,6 +11,7 @@ from typing import Awaitable, Callable, Optional
 from urllib.parse import urlencode
 
 from src.shared.events import TranscriptEvent
+from src.shared.speech_output import should_suppress_transcripts
 from src.transcription.dispatcher import dispatch_transcript
 from src.transcription.mic_capture import AudioChunk, SoundDeviceMicrophone
 
@@ -150,6 +151,8 @@ class ElevenLabsRealtimeTranscriptionService:
         return message
 
     async def _handle_partial(self, text: str) -> None:
+        if should_suppress_transcripts("elevenlabs"):
+            return
         normalized = text.strip()
         if not normalized:
             return
@@ -164,6 +167,10 @@ class ElevenLabsRealtimeTranscriptionService:
             await self.on_event(event)
 
     async def _handle_final(self, text: str) -> None:
+        if should_suppress_transcripts("elevenlabs"):
+            print("[transcription] suppressed ElevenLabs final transcript during agent speech")
+            self._current_transcript_id = self._next_transcript_id()
+            return
         normalized = text.strip()
         if not normalized:
             return

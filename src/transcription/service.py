@@ -5,6 +5,7 @@ import time
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 
+from src.shared.speech_output import should_suppress_transcripts
 from src.shared.events import TranscriptEvent
 from src.transcription.backend import LocalTranscriptionBackend
 from src.transcription.dispatcher import dispatch_transcript
@@ -67,6 +68,8 @@ class TranscriptionService:
         self._running = False
 
     async def _maybe_emit_partial(self) -> None:
+        if should_suppress_transcripts("microphone"):
+            return
         buffered_audio = self.segmenter.get_buffered_audio()
         if buffered_audio is None:
             return
@@ -99,6 +102,9 @@ class TranscriptionService:
             await self.on_event(event)
 
     async def _handle_final_segment(self, segment: Segment) -> None:
+        if should_suppress_transcripts("microphone"):
+            print("[transcription] suppressed local final transcript during agent speech")
+            return
         text = await asyncio.to_thread(
             self.backend.transcribe,
             segment.audio,

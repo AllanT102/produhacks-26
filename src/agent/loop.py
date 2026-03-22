@@ -45,7 +45,7 @@ async def run_agent_loop(
             await _emit_status(on_status, "processing", command.text)
             print(f"[agent] received transcript_id={command.transcript_id} text={command.text!r}")
             started_at = time.perf_counter()
-            task = asyncio.create_task(execute_command(command))
+            task = asyncio.create_task(execute_command(command, on_status=on_status))
             controller.set_current_task(task)
             summary = await task
             print("[timing] command total took {:.1f}ms".format((time.perf_counter() - started_at) * 1000.0))

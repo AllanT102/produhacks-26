@@ -378,6 +378,294 @@ def browser_fill_ref(ref: str, text: str, submit: bool = False) -> dict:
         return {"ok": False, "error": f"Chrome returned non-JSON output: {output[:200]}"}
 
 
+def browser_extract_text(
+    scope: str = "page",
+    fallback_scope: str = "",
+    max_blocks: int = 5,
+    max_chars: int = 1100,
+) -> dict:
+    """Extract readable text from the active Chrome tab for read-aloud flows."""
+    js = f"""
+(() => {{
+  const requestedScope = {json.dumps(scope)};
+  const fallbackScope = {json.dumps(fallback_scope)};
+  const maxBlocks = Math.max(1, Number({int(max_blocks)}));
+  const maxChars = Math.max(120, Number({int(max_chars)}));
+  const blockSelector = 'h1,h2,h3,h4,p,li,blockquote,pre,figcaption,dd';
+  const granularSelector = 'h1,h2,h3,h4,p,li,blockquote,figcaption,pre,div,span';
+
+  const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+  const isVisible = (el) => {{
+    if (!el) return false;
+    const rect = el.getBoundingClientRect();
+    const style = window.getComputedStyle(el);
+    return (
+      rect.width > 0 &&
+      rect.height > 0 &&
+      style.visibility !== 'hidden' &&
+      style.display !== 'none' &&
+      style.opacity !== '0'
+    );
+  }};
+  const isBlocked = (el) => !!el.closest('nav,aside,form,menu,dialog,button,input,textarea,select,script,style,noscript');
+  const intersectsViewport = (el) => {{
+    if (!el) return false;
+    const rect = el.getBoundingClientRect();
+    return rect.bottom > 0 && rect.top < window.innerHeight && rect.right > 0 && rect.left < window.innerWidth;
+  }};
+  const uiNoiseExact = new Set([
+    'like',
+    'comment',
+    'repost',
+    'send',
+    'share',
+    'follow',
+    'connect',
+    'message',
+    'save',
+    'dismiss',
+    'report',
+    'copy link',
+    'see more',
+    'show more',
+    'read more',
+    'learn more',
+    'open',
+    'close',
+    'next',
+    'previous',
+    'home',
+    'my network',
+    'jobs',
+    'messaging',
+    'notifications',
+    'me',
+  ]);
+  const isNoiseLine = (line) => {{
+    const normalized = clean(line);
+    if (!normalized) return true;
+    const lower = normalized.toLowerCase();
+    if (uiNoiseExact.has(lower)) return true;
+    if (/^\\(?tv static\\)?$/i.test(lower)) return true;
+    if (/^[\\d,.]+$/.test(lower)) return true;
+    if (/^\\d+[smhdw]$/i.test(lower)) return true;
+    if (/^[\\d,.]+\\s+(?:likes?|comments?|reposts?|followers?|connections?|views?)$/i.test(lower)) return true;
+    if (/^(?:follow|connect|message)\\s+[a-z0-9 .'-]+$/i.test(lower) && normalized.length < 32) return true;
+    return false;
+  }};
+  const uniqueLines = (lines) => {{
+    const seen = new Set();
+    const result = [];
+    for (const line of lines) {{
+      const normalized = clean(line);
+      if (!normalized) continue;
+      const key = normalized.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push(normalized);
+    }}
+    return result;
+  }};
+  const collectReadableLines = (container) => {{
+    if (!container) return [];
+    const lines = [];
+    for (const el of Array.from(container.querySelectorAll(granularSelector))) {{
+      if (!isVisible(el) || isBlocked(el)) continue;
+      const tag = el.tagName.toLowerCase();
+      const raw = clean(el.innerText || el.textContent);
+      if (!raw) continue;
+      const parts = raw.split(/\\n+/).map(clean).filter(Boolean);
+      const candidates = parts.length ? parts : [raw];
+      for (const part of candidates) {{
+        if (!part || isNoiseLine(part)) continue;
+        if (!/^h[1-4]$/.test(tag) && part.length < 18) continue;
+        lines.push(part);
+      }}
+      if (lines.length >= maxBlocks * 6) break;
+    }}
+    if (!lines.length) {{
+      return uniqueLines(
+        clean(container.innerText || container.textContent)
+          .split(/\\n+/)
+          .map(clean)
+          .filter((line) => line && !isNoiseLine(line))
+      );
+    }}
+    return uniqueLines(lines);
+  }};
+  const truncateText = (value) => {{
+    const normalized = clean(value);
+    if (normalized.length <= maxChars) return {{ text: normalized, truncated: false }};
+    const sliced = normalized.slice(0, maxChars);
+    const candidates = [
+      sliced.lastIndexOf('. '),
+      sliced.lastIndexOf('? '),
+      sliced.lastIndexOf('! '),
+      sliced.lastIndexOf('; '),
+    ];
+    const boundary = Math.max(...candidates);
+    const cut = boundary >= Math.floor(maxChars * 0.55) ? boundary + 1 : maxChars;
+    return {{ text: clean(sliced.slice(0, cut)), truncated: true }};
+  }};
+  const buildFocusText = () => {{
+    const viewportCenterY = window.innerHeight / 2;
+    const selectors = [
+      'article',
+      '[role="article"]',
+      '[data-urn*="activity"]',
+      '[data-id*="urn:li:activity"]',
+      '.feed-shared-update-v2',
+      '.update-components-update-v2',
+      'main article',
+      '.scaffold-layout__main',
+      'main',
+      '[role="main"]',
+    ].join(',');
+    const candidates = [];
+    for (const el of Array.from(document.querySelectorAll(selectors))) {{
+      if (!isVisible(el) || isBlocked(el) || !intersectsViewport(el)) continue;
+      const rect = el.getBoundingClientRect();
+      const lines = collectReadableLines(el);
+      if (!lines.length) continue;
+      const text = lines.join('\\n\\n');
+      if (text.length < 80) continue;
+      const tag = el.tagName.toLowerCase();
+      const className = clean(el.className || '');
+      const markerText = [
+        className,
+        el.getAttribute('data-urn') || '',
+        el.getAttribute('data-id') || '',
+        el.getAttribute('role') || '',
+      ].join(' ').toLowerCase();
+      let score = Math.min(text.length, 1400);
+      if (tag === 'article') score += 240;
+      if (markerText.includes('activity')) score += 360;
+      if (/feed|update|story|article|post/.test(markerText)) score += 220;
+      if (tag === 'main' || markerText.includes('main')) score -= 260;
+      const centerY = rect.top + (rect.height / 2);
+      score += Math.max(0, 320 - Math.abs(centerY - viewportCenterY));
+      if (rect.height > window.innerHeight * 1.6) score -= 120;
+      candidates.push({{ score, text }});
+    }}
+    candidates.sort((a, b) => b.score - a.score);
+    return candidates.length ? candidates[0].text : '';
+  }};
+  const chooseRoot = () => {{
+    const candidates = Array.from(
+      document.querySelectorAll('article,main,[role="main"],[data-testid="article"],.article,.post,.content,#content')
+    );
+    candidates.push(document.body);
+    let best = document.body;
+    let bestScore = 0;
+    for (const root of candidates) {{
+      if (!root) continue;
+      if (root !== document.body && !isVisible(root)) continue;
+      const textLength = clean(root.innerText || root.textContent).length;
+      const bonus = root.matches('article,main,[role="main"]') ? 600 : 0;
+      const score = textLength + bonus;
+      if (score > bestScore) {{
+        best = root;
+        bestScore = score;
+      }}
+    }}
+    return best || document.body;
+  }};
+
+  const root = chooseRoot();
+  const seen = new Set();
+  const blocks = [];
+  let gatheredChars = 0;
+
+  for (const el of Array.from(root.querySelectorAll(blockSelector))) {{
+    if (!isVisible(el) || isBlocked(el)) continue;
+    const text = clean(el.innerText || el.textContent);
+    if (!text) continue;
+    const tag = el.tagName.toLowerCase();
+    const minLength = /^h[1-3]$/.test(tag) ? 3 : (tag === 'li' ? 14 : 40);
+    if (text.length < minLength) continue;
+    const key = text.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    blocks.push({{ tag, text }});
+    gatheredChars += text.length;
+    if (blocks.length >= (maxBlocks * 3) || gatheredChars >= (maxChars * 2)) break;
+  }}
+
+  const selection = clean(window.getSelection ? window.getSelection().toString() : '');
+  const headingEl = Array.from(root.querySelectorAll('h1,h2,h3,[role="heading"]')).find((el) => {{
+    return isVisible(el) && clean(el.innerText || el.textContent).length >= 3;
+  }});
+  const headline = clean((headingEl && (headingEl.innerText || headingEl.textContent)) || document.title);
+  const firstParagraph = (blocks.find((block) => block.tag === 'p') || blocks[0] || {{}}).text || '';
+  const focusText = buildFocusText();
+  const rootText = clean(root.innerText || root.textContent);
+  let pageText = blocks.slice(0, maxBlocks).map((block) => block.text).join('\\n\\n');
+  if ((!pageText || pageText.length < 120) && rootText) {{
+    pageText = rootText;
+  }}
+
+  const resolveScope = (candidateScope) => {{
+    switch (candidateScope) {{
+      case 'selection':
+        return selection;
+      case 'headline':
+        return headline;
+      case 'first_paragraph':
+        return firstParagraph;
+      case 'focus':
+        return focusText;
+      default:
+        return pageText;
+    }}
+  }};
+
+  let usedScope = requestedScope || 'page';
+  let chosenText = resolveScope(usedScope);
+  if (!chosenText && fallbackScope) {{
+    usedScope = fallbackScope;
+    chosenText = resolveScope(usedScope);
+  }}
+  if (!chosenText && (requestedScope === 'page' || !requestedScope) && headline) {{
+    usedScope = 'headline';
+    chosenText = headline;
+  }}
+
+  if (!chosenText) {{
+    return JSON.stringify({{
+      ok: false,
+      error: 'Could not find readable text on the active page.',
+      requested_scope: requestedScope,
+      fallback_scope: fallbackScope,
+      title: document.title,
+      url: window.location.href
+    }});
+  }}
+
+  const truncated = truncateText(chosenText);
+  return JSON.stringify({{
+    ok: true,
+    requested_scope: requestedScope,
+    fallback_scope: fallbackScope,
+    scope: usedScope,
+    title: document.title,
+    url: window.location.href,
+    text: truncated.text,
+    truncated: truncated.truncated,
+    has_selection: Boolean(selection),
+    preview: truncated.text.slice(0, 180),
+    block_count: blocks.length,
+  }});
+}})()
+"""
+    ok, output = _execute_chrome_javascript(js)
+    if not ok:
+        return _chrome_error(output)
+    try:
+        return json.loads(output)
+    except Exception:
+        return {"ok": False, "error": f"Chrome returned non-JSON output: {output[:200]}"}
+
+
 def browser_get_page() -> dict:
     """Return the current URL and title of the active Chrome tab."""
     url_ok, url = _run_osascript('tell application "Google Chrome" to get URL of active tab of front window')

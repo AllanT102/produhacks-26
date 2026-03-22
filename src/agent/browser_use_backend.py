@@ -68,6 +68,32 @@ def _browser_use_task_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _log_browser_use_diagnostics(payload: dict[str, Any]) -> None:
+    mode = str(payload.get("mode") or "unknown")
+    normalized_command = str(payload.get("command") or "").strip()
+    model = str(payload.get("model") or "").strip()
+    fallback_from = str(payload.get("fallback_from") or "").strip()
+    timings = payload.get("timings") or {}
+    direct_ms = timings.get("direct_helper_ms")
+    direct_before_fallback_ms = timings.get("direct_helper_ms_before_fallback")
+    agent_ms = timings.get("agent_fallback_ms")
+
+    parts = [f"[planner] browser-use mode={mode}"]
+    if normalized_command:
+        parts.append(f"normalized={normalized_command!r}")
+    if model:
+        parts.append(f"model={model}")
+    if direct_ms is not None:
+        parts.append(f"direct_helper_ms={direct_ms}")
+    if direct_before_fallback_ms is not None:
+        parts.append(f"direct_helper_ms_before_fallback={direct_before_fallback_ms}")
+    if agent_ms is not None:
+        parts.append(f"agent_fallback_ms={agent_ms}")
+    if fallback_from:
+        parts.append(f"fallback_from={fallback_from!r}")
+    print(" ".join(parts))
+
+
 def _parse_browser_use_payload(stdout: str) -> Optional[dict[str, Any]]:
     for line in reversed([line.strip() for line in stdout.splitlines() if line.strip()]):
         try:
@@ -108,8 +134,17 @@ async def execute_command_with_browser_use(command: AgentCommand) -> str:
     if response.get("success") is False or task_payload.get("success") is False:
         message = response.get("error") or response.get("message") or "browser-use task failed"
         raise RuntimeError(str(message))
+    _log_browser_use_diagnostics(task_payload)
     print("[timing] browser-use execute total took {:.1f}ms".format(elapsed_ms(started_at)))
     return _extract_browser_use_summary(task_payload)
+
+
+async def prewarm_browser_use_server() -> None:
+    """Start the browser-use server ahead of the first command."""
+    if not browser_use_available():
+        return
+    async with _SERVER_LOCK:
+        await _ensure_browser_use_server_locked()
 
 
 async def _ensure_browser_use_server_locked() -> asyncio.subprocess.Process:

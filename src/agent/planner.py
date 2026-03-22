@@ -1,9 +1,13 @@
 """Agentic planner: route commands through the warm browser-use backend."""
 
 import time
+from typing import Awaitable, Callable, Optional
 
+from src.agent.read_aloud import maybe_execute_read_aloud
 from src.shared.events import AgentCommand
 from src.shared.timing import elapsed_ms
+
+StatusCallback = Callable[[str, str], Awaitable[None]]
 
 
 def _load_browser_use_backend():
@@ -13,9 +17,17 @@ def _load_browser_use_backend():
     return execute_command_with_browser_use, should_use_browser_use
 
 
-async def execute_command(command: AgentCommand) -> str:
+async def execute_command(
+    command: AgentCommand,
+    on_status: Optional[StatusCallback] = None,
+) -> str:
     """Run a single command through the persistent browser-use backend."""
     started_at = time.perf_counter()
+    readback_summary = await maybe_execute_read_aloud(command.text, on_status=on_status)
+    if readback_summary is not None:
+        print("[timing] planner read-aloud path took {:.1f}ms".format(elapsed_ms(started_at)))
+        return readback_summary
+
     execute_command_with_browser_use, should_use_browser_use = _load_browser_use_backend()
 
     if not should_use_browser_use(command):
