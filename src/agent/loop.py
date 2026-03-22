@@ -36,8 +36,7 @@ async def run_agent_loop(
 ) -> None:
     """Consume finalized transcript commands and run the planner with status updates.
 
-    Any commands that arrive while the agent is busy are drained and discarded
-    so the same utterance cannot trigger multiple back-to-back executions.
+    Commands that arrive while the agent is busy stay queued and run next.
     """
     while True:
         command = await agent_queue.get()
@@ -61,10 +60,3 @@ async def run_agent_loop(
         finally:
             controller.set_current_task(None)
             agent_queue.task_done()
-            drained = 0
-            while not agent_queue.empty():
-                agent_queue.get_nowait()
-                agent_queue.task_done()
-                drained += 1
-            if drained:
-                print(f"[agent] discarded {drained} command(s) that arrived during execution")

@@ -105,14 +105,16 @@ class OverlayDelegate(NSObject):
         self.overlay.submit_text()
 
     def windowWillClose_(self, _notification) -> None:
+        self.overlay.on_quit()
         NSApp().terminate_(None)
-
 
 class VoiceOverlay:
     """Small always-visible control surface for app state."""
 
-    _READY_SETTLE_SECONDS = 1.2
-    _TRANSCRIPT_FADE_SECONDS = 2.6
+    _READY_SETTLE_SECONDS = 1.0
+    _STOPPED_SETTLE_SECONDS = 1.0
+    _ERROR_SETTLE_SECONDS = 1.8
+    _TRANSCRIPT_FADE_SECONDS = 2.0
 
     def __init__(
         self,
@@ -134,7 +136,7 @@ class VoiceOverlay:
         self.app.setActivationPolicy_(NSApplicationActivationPolicyRegular)
         self._pulse_tick = 0
         self._last_activity_at = time.time()
-        self._compact_size = (156.0, 40.0)
+        self._compact_size = (186.0, 40.0)
         self._expanded_size = (472.0, 134.0 if self.wispr_mode else 108.0)
         self._expanded = False
         self._processing_active = False
@@ -384,7 +386,7 @@ class VoiceOverlay:
             transcript_type = event.payload.get("kind", "partial")
             if transcript_type == "partial":
                 self.state.detail = "Listening..."
-                if self.state.status != "processing":
+                if self.state.status not in ("processing", "stopped", "error"):
                     self.state.status = "listening"
             else:
                 self.state.detail = "Command captured"
@@ -478,19 +480,23 @@ class VoiceOverlay:
 
     def _maybe_compact(self) -> None:
         """Collapse the overlay after a brief quiet period."""
-        if self.state.status in ("processing", "stopped", "error"):
+        if self.state.status == "processing":
             return
         quiet_for = time.time() - self._last_activity_at
         if self.state.status == "idle" and quiet_for > self._READY_SETTLE_SECONDS:
-            self.state.status = "listening"
-            self.state.detail = "Mic live"
+            self._return_to_listening(clear_transcript=True)
+            self.refresh_ui()
+            return
+        if self.state.status == "stopped" and quiet_for > self._STOPPED_SETTLE_SECONDS:
+            self._return_to_listening(clear_transcript=True)
+            self.refresh_ui()
+            return
+        if self.state.status == "error" and quiet_for > self._ERROR_SETTLE_SECONDS:
+            self._return_to_listening(clear_transcript=False)
             self.refresh_ui()
             return
         if self.state.transcript and quiet_for > self._TRANSCRIPT_FADE_SECONDS:
-            self.state.transcript = ""
-            if self.state.status == "idle":
-                self.state.status = "listening"
-            self.state.detail = "Mic live"
+            self._return_to_listening(clear_transcript=True)
             self.refresh_ui()
 
     def _apply_layout(self) -> None:
@@ -507,9 +513,11 @@ class VoiceOverlay:
             else:
                 self._apply_standard_expanded_layout()
         else:
-            self.status_chip.setFrame_(NSMakeRect(20, 8, 112, 24))
+            self.status_chip.setFrame_(NSMakeRect(18, 8, 112, 24))
             self.stop_button.setHidden_(True)
-            self.quit_button.setHidden_(True)
+            self.quit_button.setHidden_(not self.wispr_mode)
+            if self.wispr_mode:
+                self.quit_button.setFrame_(NSMakeRect(146, 6, 24, 24))
             self.detail_label.setHidden_(True)
             self.detail_symbol_label.setHidden_(True)
             self.placeholder_label.setHidden_(True)
@@ -624,6 +632,13 @@ class VoiceOverlay:
         self.input_hint_label.setHidden_(has_text or self.state.status == "processing")
         if self.state.status != "processing":
             self.window.makeFirstResponder_(self.command_input)
+
+    def _return_to_listening(self, clear_transcript: bool) -> None:
+        """Restore the passive listening state after a transient command state."""
+        self.state.status = "listening"
+        self.state.detail = "Mic live"
+        if clear_transcript:
+            self.state.transcript = ""
 
     @staticmethod
     def _monospaced_font(size: float, bold: bool) -> object:

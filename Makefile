@@ -2,7 +2,7 @@ PYTHON ?= python3
 VENV := .venv
 ACTIVATE := . $(VENV)/bin/activate
 
-.PHONY: setup check run-mock run-whisper run-type run-wispr run-experiment
+.PHONY: setup check run-mock run-whisper run-whisper-debug run-type run-wispr run-experiment
 
 setup:
 	$(PYTHON) -m venv $(VENV)
@@ -17,6 +17,9 @@ run-mock:
 
 run-whisper:
 	$(ACTIVATE) && BROWSER_USE_ENABLED=$${BROWSER_USE_ENABLED:-1} TRANSCRIPTION_BACKEND=faster-whisper WHISPER_MODEL_SIZE=$${WHISPER_MODEL_SIZE:-base} python3 -m src.main
+
+run-whisper-debug:
+	$(ACTIVATE) && TRANSCRIPTION_BACKEND=faster-whisper WHISPER_MODEL_SIZE=$${WHISPER_MODEL_SIZE:-base} python3 scripts/debug_whisper_input.py $${WHISPER_DEBUG_ARGS:-}
 
 run-type:
 	$(ACTIVATE) && unset FAKE_TRANSCRIPT_TEXT MOCK_TRANSCRIPT_TEXT && BROWSER_USE_ENABLED=$${BROWSER_USE_ENABLED:-1} DEV_INPUT_MODE=type python3 -m src.main

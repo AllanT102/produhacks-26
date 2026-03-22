@@ -6,6 +6,7 @@ python3 -m py_compile \
   scripts/browser_compare.py \
   scripts/browser_use_direct.py \
   scripts/browser_use_server.py \
+  scripts/debug_whisper_input.py \
   src/main.py \
   src/agent/browser_use_backend.py \
   src/agent/controller.py \
