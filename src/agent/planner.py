@@ -1,4 +1,4 @@
-"""Agentic planner: routes all commands through browser-use."""
+"""Agentic planner: route commands through the warm browser-use backend."""
 
 import time
 
@@ -14,11 +14,13 @@ def _load_browser_use_backend():
 
 
 async def execute_command(command: AgentCommand) -> str:
-    """Run the agentic loop for a single voice command using browser-use."""
+    """Run a single command through the persistent browser-use backend."""
     started_at = time.perf_counter()
     execute_command_with_browser_use, should_use_browser_use = _load_browser_use_backend()
+
     if not should_use_browser_use(command):
-        return "browser-use is not available. Ensure the .venv-browseruse environment is set up."
+        return "browser-use is unavailable. Ensure BROWSER_USE_ENABLED=1 and .venv-browseruse is set up."
+
     print(f"[planner] routing to browser-use backend for goal={command.text!r}")
     result = await execute_command_with_browser_use(command)
     print("[timing] planner browser-use path took {:.1f}ms".format(elapsed_ms(started_at)))
