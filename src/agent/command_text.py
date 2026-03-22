@@ -2,6 +2,44 @@
 
 import re
 
+_ACTION_VERBS = (
+    "open",
+    "go",
+    "search",
+    "find",
+    "look",
+    "click",
+    "scroll",
+    "read",
+    "check",
+    "show",
+    "press",
+    "close",
+    "play",
+    "pause",
+    "message",
+    "reply",
+    "send",
+    "say",
+    "type",
+    "write",
+    "fill",
+)
+
+
+def _contains_action_phrase(text: str) -> bool:
+    lowered = text.lower().strip()
+    if not lowered:
+        return False
+    return re.search(r"\b(?:%s)\b" % "|".join(_ACTION_VERBS), lowered) is not None
+
+
+def _trim_to_action_phrase(text: str) -> str:
+    match = re.search(r"\b(?:%s)\b" % "|".join(_ACTION_VERBS), text, flags=re.IGNORECASE)
+    if not match:
+        return text
+    return text[match.start():].strip(" \t\r\n.,!?;:()[]{}\"'`-–—•*")
+
 
 def canonicalize_command_text(text: str) -> str:
     """Normalize whitespace and collapse obvious repeated sentence duplicates."""
@@ -32,6 +70,10 @@ def canonicalize_command_text(text: str) -> str:
             continue
         deduped_parts.append(part)
         seen_run = lower
+
+    action_parts = [_trim_to_action_phrase(part) for part in deduped_parts if _contains_action_phrase(part)]
+    if action_parts:
+        return ". ".join(action_parts)
 
     if deduped_parts:
         return ". ".join(deduped_parts)

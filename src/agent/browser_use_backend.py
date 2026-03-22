@@ -8,7 +8,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 from uuid import uuid4
 
 from src.shared.events import AgentCommand
@@ -21,6 +21,7 @@ _SERVER_TIMEOUT_SECONDS = float(os.getenv("BROWSER_USE_TIMEOUT", "45"))
 
 _SERVER_PROCESS: Optional[asyncio.subprocess.Process] = None
 _SERVER_LOCK = asyncio.Lock()
+StatusCallback = Callable[[str, str], Awaitable[None]]
 
 
 def browser_use_python() -> Path:
@@ -120,14 +121,23 @@ def _parse_browser_use_payload(stdout: str) -> Optional[dict[str, Any]]:
     return candidate if isinstance(candidate, dict) else None
 
 
-async def execute_command_with_browser_use(command: AgentCommand) -> str:
+async def execute_command_with_browser_use(
+    command: AgentCommand,
+    on_status: Optional[StatusCallback] = None,
+) -> str:
     """Execute a browser task through browser-use and return a concise summary."""
     started_at = time.perf_counter()
     if not browser_use_available():
         raise RuntimeError(f"browser-use server not available at {browser_use_python()} and {_SERVER_SCRIPT}")
 
+    if on_status is not None:
+        phase = "Starting browser" if _SERVER_PROCESS is None or _SERVER_PROCESS.returncode is not None else "Working in browser"
+        await on_status("processing", phase)
+
     async with _SERVER_LOCK:
         process = await _ensure_browser_use_server_locked()
+        if on_status is not None:
+            await on_status("processing", "Working in browser")
         response = await _send_browser_use_request_locked(process, command.text)
 
     task_payload = _browser_use_task_payload(response)

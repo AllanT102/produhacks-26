@@ -34,6 +34,8 @@ async def execute_command(
         return "browser-use is unavailable. Ensure BROWSER_USE_ENABLED=1 and .venv-browseruse is set up."
 
     print(f"[planner] routing to browser-use backend for goal={command.text!r}")
-    result = await execute_command_with_browser_use(command)
+    if on_status is not None:
+        await on_status("processing", "Working in browser")
+    result = await execute_command_with_browser_use(command, on_status=on_status)
     print("[timing] planner browser-use path took {:.1f}ms".format(elapsed_ms(started_at)))
     return result

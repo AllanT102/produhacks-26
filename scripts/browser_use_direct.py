@@ -41,6 +41,15 @@ class CommandIntent:
     open_in_new_tab: bool = False
     search_query: Optional[str] = None
     search_provider: Optional[str] = None
+    fill_field: Optional[str] = None
+    fill_text: Optional[str] = None
+    fill_submit: bool = False
+    select_field: Optional[str] = None
+    select_option: Optional[str] = None
+    toggle_label: Optional[str] = None
+    toggle_value: Optional[bool] = None
+    active_text: Optional[str] = None
+    active_submit: bool = False
     scroll_text: Optional[str] = None
     scroll_direction: Optional[str] = None
     scroll_amount: int = 0
@@ -50,9 +59,14 @@ class CommandIntent:
     route: Optional[str] = None
     click_first_kind: Optional[str] = None
     click_first_query: Optional[str] = None
+    click_nth_kind: Optional[str] = None
+    click_nth_query: Optional[str] = None
+    click_nth_index: Optional[int] = None
+    click_nth_new_tab: bool = False
     profile_query: Optional[str] = None
     video_query: Optional[str] = None
     tab_index: Optional[int] = None
+    key_press: Optional[str] = None
 
 
 def _normalize_whitespace(value: str) -> str:
@@ -106,6 +120,8 @@ def normalize_browser_command(command: str) -> str:
         (r"^open my messages$", "open messages"),
         (r"^click messaging$", "open messages"),
         (r"^open messaging$", "open messages"),
+        (r"^click send a message$", "click the message button"),
+        (r"^send a message$", "click the message button"),
         (r"^check my notifications$", "open notifications"),
         (r"^open my notifications$", "open notifications"),
         (r"^click notifications$", "open notifications"),
@@ -175,6 +191,146 @@ def _extract_generic_click_target(text: str) -> tuple[Optional[str], Optional[st
     if click_kind_hint is None and lower in {"x", "close", "dismiss"}:
         click_kind_hint = "button"
     return label, click_kind_hint
+
+
+_ORDINAL_INDEX = {
+    "first": 1,
+    "1st": 1,
+    "second": 2,
+    "2nd": 2,
+    "third": 3,
+    "3rd": 3,
+    "fourth": 4,
+    "4th": 4,
+    "fifth": 5,
+    "5th": 5,
+    "last": -1,
+}
+
+
+def _ordinal_to_index(value: str) -> Optional[int]:
+    return _ORDINAL_INDEX.get(_normalize_whitespace(value).lower())
+
+
+def _parse_field_fill(text: str) -> tuple[Optional[str], Optional[str], bool]:
+    patterns = [
+        r"^(?:type|enter|fill|write)\s+(?P<value>.+?)\s+(?:in|into)\s+(?P<field>.+?)(?P<submit>\s+and\s+(?:press enter|submit))?$",
+        r"^(?:type|enter|fill|write)\s+(?P<field>.+?)\s+with\s+(?P<value>.+?)(?P<submit>\s+and\s+(?:press enter|submit))?$",
+        r"^(?:search|look up)\s+(?P<value>.+?)\s+(?:in|into)\s+(?P<field>.+?)(?P<submit>\s+and\s+(?:press enter|submit))?$",
+    ]
+    for pattern in patterns:
+        match = re.match(pattern, text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        field = _normalize_whitespace(match.group("field")).strip(" .")
+        value = _normalize_whitespace(match.group("value")).strip(" .")
+        field = re.sub(r"\s+(?:field|input|box|bar|textbox)$", "", field, flags=re.IGNORECASE)
+        if field and value:
+            return field, value, bool(match.groupdict().get("submit"))
+    return None, None, False
+
+
+def _parse_select_option(text: str) -> tuple[Optional[str], Optional[str]]:
+    patterns = [
+        r"^(?:select|choose)\s+(?P<option>.+?)\s+(?:from|in)\s+(?P<field>.+)$",
+        r"^(?:set)\s+(?P<field>.+?)\s+to\s+(?P<option>.+)$",
+    ]
+    for pattern in patterns:
+        match = re.match(pattern, text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        field = _normalize_whitespace(match.group("field")).strip(" .")
+        option = _normalize_whitespace(match.group("option")).strip(" .")
+        field = re.sub(r"\s+(?:dropdown|menu|select|selector|filter)$", "", field, flags=re.IGNORECASE)
+        if field and option:
+            return field, option
+    return None, None
+
+
+def _parse_toggle_command(text: str) -> tuple[Optional[str], Optional[bool]]:
+    patterns = [
+        (r"^(?:check|enable|turn on)\s+(?P<label>.+)$", True),
+        (r"^(?:uncheck|disable|turn off)\s+(?P<label>.+)$", False),
+    ]
+    for pattern, value in patterns:
+        match = re.match(pattern, text, flags=re.IGNORECASE)
+        if match:
+            label = _normalize_whitespace(match.group("label")).strip(" .")
+            label = re.sub(r"\s+(?:checkbox|toggle|switch|option)$", "", label, flags=re.IGNORECASE)
+            if label:
+                return label, value
+    return None, None
+
+
+def _parse_ranked_click(text: str) -> tuple[Optional[int], Optional[str], Optional[str], bool]:
+    normalized = _normalize_whitespace(text)
+    open_in_new_tab = False
+    if re.search(r"\s+in\s+a\s+new\s+tab$", normalized, flags=re.IGNORECASE):
+        normalized = re.sub(r"\s+in\s+a\s+new\s+tab$", "", normalized, flags=re.IGNORECASE).strip()
+        open_in_new_tab = True
+    match = re.match(
+        r"^(?P<verb>click|open)(?: on)?\s+(?:the\s+)?(?P<ordinal>first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|last)\s+(?:(?P<query>.+?)\s+)?(?P<kind>link|result|button|tab|video|option|profile)$",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None, None, None, False
+    index = _ordinal_to_index(match.group("ordinal"))
+    kind = str(match.group("kind") or "").lower()
+    query = _normalize_whitespace(match.group("query") or "").strip(" .") or None
+    return index, kind, query, open_in_new_tab
+
+
+def _normalize_key_press(text: str) -> Optional[str]:
+    raw = _normalize_whitespace(text).lower().strip(" .")
+    if not raw:
+        return None
+    simple_map = {
+        "enter": "Enter",
+        "return": "Enter",
+        "escape": "Escape",
+        "esc": "Escape",
+        "tab": "Tab",
+        "space": "Space",
+        "spacebar": "Space",
+        "slash": "/",
+        "forward slash": "/",
+        "backspace": "Backspace",
+        "delete": "Delete",
+        "up": "ArrowUp",
+        "down": "ArrowDown",
+        "left": "ArrowLeft",
+        "right": "ArrowRight",
+    }
+    if raw in simple_map:
+        return simple_map[raw]
+
+    tokens = raw.replace("+", " ").split()
+    if not tokens:
+        return None
+    mapped_tokens: list[str] = []
+    for token in tokens:
+        if token in {"command", "cmd"}:
+            mapped_tokens.append("Meta")
+        elif token in {"control", "ctrl"}:
+            mapped_tokens.append("Control")
+        elif token == "shift":
+            mapped_tokens.append("Shift")
+        elif token in {"option", "alt"}:
+            mapped_tokens.append("Alt")
+        elif token == "enter":
+            mapped_tokens.append("Enter")
+        elif token == "tab":
+            mapped_tokens.append("Tab")
+        elif token == "escape":
+            mapped_tokens.append("Escape")
+        elif len(token) == 1 and token.isalnum():
+            mapped_tokens.append(token.upper())
+        else:
+            return None
+    if not mapped_tokens:
+        return None
+    return "+".join(mapped_tokens)
 
 
 def _site_alias_url(target: str) -> Optional[str]:
@@ -250,6 +406,15 @@ def parse_intent(command: str) -> CommandIntent:
 
     open_in_new_tab = False
     search_query = None
+    fill_field = None
+    fill_text = None
+    fill_submit = False
+    active_text = None
+    active_submit = False
+    select_field = None
+    select_option = None
+    toggle_label = None
+    toggle_value = None
     click_kind_hint = None
     new_tab_match = re.match(
         r"^(?:open|start)\s+a new tab(?:\s+(?:with|for))?\s+(.+?)$",
@@ -287,6 +452,21 @@ def parse_intent(command: str) -> CommandIntent:
         else:
             url = _guess_open_site_url(text)
 
+    fill_field, fill_text, fill_submit = _parse_field_fill(text)
+    if fill_field is not None:
+        search_query = None
+        url = None
+
+    active_fill_match = re.match(r"^(?:type|write|say)\s+(.+?)$", text, flags=re.IGNORECASE)
+    if active_fill_match and fill_field is None:
+        active_text = _normalize_whitespace(active_fill_match.group(1)).strip(" .")
+        if active_text:
+            search_query = None
+            url = None
+
+    select_field, select_option = _parse_select_option(text)
+    toggle_label, toggle_value = _parse_toggle_command(text)
+
     scroll_text = None
     scroll_match = re.search(r"\bscroll to (?P<t>.+?)(?:,| then | and |$)", lower, flags=re.IGNORECASE)
     if scroll_match:
@@ -315,12 +495,28 @@ def parse_intent(command: str) -> CommandIntent:
     route = None
     if lower in {"open messages", "go to messages"}:
         route = "messages"
+    elif lower in {
+        "message",
+        "message them",
+        "message him",
+        "message her",
+        "message david",
+        "send a message",
+        "send message",
+        "click message",
+        "click the message",
+        "click message button",
+        "click the message button",
+    }:
+        route = "message_button"
     elif lower in {"open notifications", "go to notifications"}:
         route = "notifications"
     elif lower in {"open my network", "go to my network"}:
         route = "network"
     elif lower in {"open chrome", "open browser", "open google chrome"}:
         route = "browser"
+    elif lower in {"click message", "click the message", "click message button", "click the message button", "message", "send a message"}:
+        route = "message_button"
     elif lower in {"back", "go back", "go back a page", "go back one page"}:
         route = "back"
     elif lower in {"forward", "go forward", "go forward a page", "go forward one page"}:
@@ -345,6 +541,33 @@ def parse_intent(command: str) -> CommandIntent:
         route = "scroll_top"
     elif lower in {"scroll to bottom", "go to bottom", "bottom of page"}:
         route = "scroll_bottom"
+    elif lower in {"submit", "submit form", "press enter", "hit enter"}:
+        route = "submit"
+    elif lower in {"press escape", "hit escape", "escape"}:
+        route = "escape"
+    elif lower in {"duplicate tab", "duplicate this tab"}:
+        route = "duplicate_tab"
+    elif lower in {"go home", "home page", "open home page"}:
+        route = "home"
+    elif lower in {"open history", "history"}:
+        route = "history"
+    elif lower in {"open downloads", "downloads"}:
+        route = "downloads"
+    elif lower in {"open bookmarks", "bookmarks"}:
+        route = "bookmarks"
+    elif lower in {"zoom in"}:
+        route = "zoom_in"
+    elif lower in {"zoom out"}:
+        route = "zoom_out"
+    elif lower in {"reset zoom", "zoom reset"}:
+        route = "zoom_reset"
+
+    if route is not None:
+        url = None
+        search_query = None
+
+    if route is None and re.match(r"^(?:message|send a message to)\s+.+$", lower):
+        route = "message_button"
 
     if route in {"scroll_top", "scroll_bottom"}:
         scroll_text = None
@@ -359,6 +582,10 @@ def parse_intent(command: str) -> CommandIntent:
 
     click_first_kind = None
     click_first_query = None
+    click_nth_kind = None
+    click_nth_query = None
+    click_nth_index = None
+    click_nth_new_tab = False
     first_target_match = re.search(
         r"\b(?:click|open)(?: on)? the first (?:(?P<query>.+?) )?(?P<kind>link|result|profile|video|tab)\b",
         lower,
@@ -378,6 +605,9 @@ def parse_intent(command: str) -> CommandIntent:
         if any_target_match:
             click_first_kind = "link"
             click_first_query = _normalize_whitespace(any_target_match.group("query")).strip(" .")
+
+    if click_first_kind is None:
+        click_nth_index, click_nth_kind, click_nth_query, click_nth_new_tab = _parse_ranked_click(text)
 
     video_query = None
     video_match = re.search(
@@ -436,22 +666,56 @@ def parse_intent(command: str) -> CommandIntent:
     if tab_match:
         tab_index = int(tab_match.group(1))
 
+    key_press = None
+    if route is None:
+        key_match = re.match(r"^press\s+(.+)$", text, flags=re.IGNORECASE)
+        if key_match:
+            key_press = _normalize_key_press(key_match.group(1))
+            if key_press:
+                url = None
+                search_query = None
+
     if (
         click_text is None
         and route is None
         and click_first_kind is None
+        and click_nth_kind is None
         and profile_query is None
         and video_query is None
         and search_query is None
+        and fill_field is None
+        and select_field is None
+        and toggle_label is None
+        and key_press is None
         and url is None
     ):
         click_text, click_kind_hint = _extract_generic_click_target(text)
+
+    if click_text is None and route is None:
+        if lower in {"dismiss popup", "dismiss dialog", "close popup", "close dialog", "close modal", "dismiss modal"}:
+            click_text = "Close"
+            click_kind_hint = "button"
+        elif lower in {"accept cookies", "accept cookie banner", "accept all cookies"}:
+            click_text = "Accept"
+            click_kind_hint = "button"
+        elif lower in {"reject cookies", "reject cookie banner", "reject all cookies"}:
+            click_text = "Reject"
+            click_kind_hint = "button"
 
     return CommandIntent(
         url=url,
         open_in_new_tab=open_in_new_tab,
         search_query=search_query,
         search_provider=search_provider,
+        fill_field=fill_field,
+        fill_text=fill_text,
+        fill_submit=fill_submit,
+        active_text=active_text,
+        active_submit=active_submit,
+        select_field=select_field,
+        select_option=select_option,
+        toggle_label=toggle_label,
+        toggle_value=toggle_value,
         scroll_text=scroll_text,
         scroll_direction=scroll_direction,
         scroll_amount=scroll_amount,
@@ -461,9 +725,14 @@ def parse_intent(command: str) -> CommandIntent:
         route=route,
         click_first_kind=click_first_kind,
         click_first_query=click_first_query,
+        click_nth_kind=click_nth_kind,
+        click_nth_query=click_nth_query,
+        click_nth_index=click_nth_index,
+        click_nth_new_tab=click_nth_new_tab,
         profile_query=profile_query,
         video_query=video_query,
         tab_index=tab_index,
+        key_press=key_press,
     )
 
 
@@ -1077,6 +1346,411 @@ async def _click_text(browser: Browser, text: str, kind_hint: Optional[str] = No
     }
 
 
+async def _fill_field(browser: Browser, field_query: str, text: str, submit: bool = False) -> dict:
+    page = await browser.must_get_current_page()
+    result_text = await page.evaluate(
+        """(payload) => {
+            const originalField = String(payload.field || '').trim();
+            const fillValue = String(payload.value ?? '');
+            const normalize = (value) =>
+              String(value || '')
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, ' ')
+                .replace(/\\s+/g, ' ')
+                .trim();
+            const fieldQuery = normalize(originalField);
+            const tokens = fieldQuery.split(/\\s+/).filter(Boolean);
+            const isVisible = (el) => {
+              const rect = el.getBoundingClientRect();
+              const style = window.getComputedStyle(el);
+              return rect.width > 0
+                && rect.height > 0
+                && style.visibility !== 'hidden'
+                && style.display !== 'none';
+            };
+            const labelText = (el) => {
+              const values = [
+                el.getAttribute('aria-label'),
+                el.getAttribute('placeholder'),
+                el.getAttribute('title'),
+                el.getAttribute('name'),
+                el.id ? (document.querySelector(`label[for="${el.id}"]`) || {}).innerText : '',
+                el.labels ? Array.from(el.labels).map((label) => label.innerText || label.textContent || '').join(' ') : '',
+                el.closest('label') ? (el.closest('label').innerText || el.closest('label').textContent || '') : '',
+              ];
+              return values.filter(Boolean).join(' ').trim();
+            };
+            const fieldScore = (el) => {
+              const tag = String(el.tagName || '').toLowerCase();
+              const role = String(el.getAttribute('role') || '').toLowerCase();
+              const type = String(el.getAttribute('type') || '').toLowerCase();
+              const label = normalize(labelText(el));
+              let score = 0;
+              if (!label && !fieldQuery) return 0;
+              if (label === fieldQuery) score += 70;
+              if (fieldQuery && label.includes(fieldQuery)) score += 30;
+              const allTokensPresent = tokens.length > 0 && tokens.every((token) => label.includes(token));
+              if (allTokensPresent) score += 18;
+              for (const token of tokens) {
+                if (label.includes(token)) score += 8;
+              }
+              if (fieldQuery.includes('search')) {
+                if (type === 'search' || role === 'searchbox') score += 26;
+                if (label.includes('search')) score += 12;
+              }
+              if (fieldQuery.includes('email') && type === 'email') score += 24;
+              if (fieldQuery.includes('password') && type === 'password') score += 24;
+              if (tag === 'textarea') score += 6;
+              if (el.isContentEditable || role === 'textbox') score += 6;
+              return score;
+            };
+            const selector = [
+              'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"])',
+              'textarea',
+              'select',
+              '[contenteditable="true"]',
+              '[role="textbox"]',
+              '[role="searchbox"]',
+              '[role="combobox"]'
+            ].join(',');
+            const candidates = Array.from(document.querySelectorAll(selector))
+              .filter((el) => isVisible(el))
+              .map((el) => ({el, score: fieldScore(el)}))
+              .filter((entry) => entry.score > 0)
+              .sort((a, b) => b.score - a.score);
+            const target = candidates.length ? candidates[0].el : null;
+            if (!target) {
+              return JSON.stringify({ok:false,error:`Could not find a field for "${originalField}".`});
+            }
+
+            target.focus();
+            if (target.tagName.toLowerCase() === 'select') {
+              return JSON.stringify({ok:false,error:`"${originalField}" is a dropdown. Use select ... from ... instead.`});
+            }
+            if ('value' in target) {
+              target.value = fillValue;
+            } else if (target.isContentEditable) {
+              target.textContent = fillValue;
+            } else {
+              target.textContent = fillValue;
+            }
+            target.dispatchEvent(new Event('input', {bubbles: true}));
+            target.dispatchEvent(new Event('change', {bubbles: true}));
+            return JSON.stringify({
+              ok:true,
+              field: originalField,
+              resolvedLabel: labelText(target),
+              tag: String(target.tagName || '').toLowerCase(),
+            });
+        }""",
+        {"field": field_query, "value": text},
+    )
+    result = json.loads(result_text or "{}")
+    if not result.get("ok"):
+        raise RuntimeError(result.get("error") or f"Could not fill '{field_query}'.")
+    if submit:
+        await page.press("Enter")
+        await asyncio.sleep(0.35)
+    else:
+        await asyncio.sleep(0.1)
+    state = await browser.get_browser_state_summary(include_screenshot=False)
+    return {
+        "field": field_query,
+        "resolved_label": result.get("resolvedLabel") or field_query,
+        "text": text,
+        "submitted": submit,
+        "url": state.url,
+        "title": state.title,
+    }
+
+
+async def _fill_active_field(browser: Browser, text: str, submit: bool = False) -> dict:
+    page = await browser.must_get_current_page()
+    result_text = await page.evaluate(
+        """(payload) => {
+            const fillValue = String(payload.value ?? '');
+            const active = document.activeElement;
+            const candidates = [];
+            if (active) candidates.push(active);
+            for (const el of Array.from(document.querySelectorAll('textarea,[contenteditable=\"true\"],[role=\"textbox\"],input:not([type=\"hidden\"]):not([type=\"checkbox\"]):not([type=\"radio\"]):not([type=\"submit\"]):not([type=\"button\"])'))) {
+              if (!candidates.includes(el)) candidates.push(el);
+            }
+            const isVisible = (el) => {
+              if (!el) return false;
+              const rect = el.getBoundingClientRect();
+              const style = window.getComputedStyle(el);
+              return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+            };
+            const score = (el) => {
+              let total = 0;
+              if (!el || !isVisible(el)) return -1;
+              if (el === document.activeElement) total += 100;
+              const tag = String(el.tagName || '').toLowerCase();
+              const role = String(el.getAttribute('role') || '').toLowerCase();
+              const aria = String(el.getAttribute('aria-label') || '').toLowerCase();
+              const placeholder = String(el.getAttribute('placeholder') || '').toLowerCase();
+              if (tag === 'textarea') total += 30;
+              if (el.isContentEditable || role === 'textbox') total += 28;
+              if (aria.includes('message') || placeholder.includes('message')) total += 36;
+              if (aria.includes('write') || placeholder.includes('write')) total += 16;
+              return total;
+            };
+            const target = candidates
+              .map((el) => ({el, score: score(el)}))
+              .filter((entry) => entry.score > 0)
+              .sort((a, b) => b.score - a.score)[0]?.el;
+            if (!target) {
+              return JSON.stringify({ok:false,error:'Could not find an active text field to type into.'});
+            }
+            target.focus();
+            if ('value' in target) {
+              target.value = fillValue;
+            } else if (target.isContentEditable) {
+              target.textContent = fillValue;
+            } else {
+              target.textContent = fillValue;
+            }
+            target.dispatchEvent(new Event('input', {bubbles: true}));
+            target.dispatchEvent(new Event('change', {bubbles: true}));
+            return JSON.stringify({
+              ok:true,
+              tag: String(target.tagName || '').toLowerCase(),
+              aria: String(target.getAttribute('aria-label') || ''),
+              placeholder: String(target.getAttribute('placeholder') || ''),
+            });
+        }""",
+        {"value": text},
+    )
+    result = json.loads(result_text or "{}")
+    if not result.get("ok"):
+        raise RuntimeError(result.get("error") or "Could not type into the active field.")
+    if submit:
+        await page.press("Enter")
+        await asyncio.sleep(0.35)
+    else:
+        await asyncio.sleep(0.1)
+    state = await browser.get_browser_state_summary(include_screenshot=False)
+    return {
+        "text": text,
+        "submitted": submit,
+        "target_tag": result.get("tag"),
+        "target_aria": result.get("aria"),
+        "target_placeholder": result.get("placeholder"),
+        "url": state.url,
+        "title": state.title,
+    }
+
+
+async def _select_option(browser: Browser, field_query: str, option_text: str) -> dict:
+    page = await browser.must_get_current_page()
+    result_text = await page.evaluate(
+        """(payload) => {
+            const originalField = String(payload.field || '').trim();
+            const originalOption = String(payload.option || '').trim();
+            const normalize = (value) =>
+              String(value || '')
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, ' ')
+                .replace(/\\s+/g, ' ')
+                .trim();
+            const fieldQuery = normalize(originalField);
+            const optionQuery = normalize(originalOption);
+            const fieldTokens = fieldQuery.split(/\\s+/).filter(Boolean);
+            const optionTokens = optionQuery.split(/\\s+/).filter(Boolean);
+            const isVisible = (el) => {
+              const rect = el.getBoundingClientRect();
+              const style = window.getComputedStyle(el);
+              return rect.width > 0
+                && rect.height > 0
+                && style.visibility !== 'hidden'
+                && style.display !== 'none';
+            };
+            const labelText = (el) => {
+              const values = [
+                el.getAttribute('aria-label'),
+                el.getAttribute('placeholder'),
+                el.getAttribute('title'),
+                el.getAttribute('name'),
+                el.id ? (document.querySelector(`label[for="${el.id}"]`) || {}).innerText : '',
+                el.labels ? Array.from(el.labels).map((label) => label.innerText || label.textContent || '').join(' ') : '',
+                el.closest('label') ? (el.closest('label').innerText || el.closest('label').textContent || '') : '',
+              ];
+              return values.filter(Boolean).join(' ').trim();
+            };
+            const scoreLabel = (label, tokens, whole) => {
+              const normalized = normalize(label);
+              let score = 0;
+              if (normalized === whole) score += 70;
+              if (whole && normalized.includes(whole)) score += 30;
+              const allTokensPresent = tokens.length > 0 && tokens.every((token) => normalized.includes(token));
+              if (allTokensPresent) score += 20;
+              for (const token of tokens) {
+                if (normalized.includes(token)) score += 8;
+              }
+              return score;
+            };
+
+            const selects = Array.from(document.querySelectorAll('select,[role="combobox"]'))
+              .filter((el) => isVisible(el))
+              .map((el) => ({el, score: scoreLabel(labelText(el), fieldTokens, fieldQuery)}))
+              .filter((entry) => entry.score > 0)
+              .sort((a, b) => b.score - a.score);
+            const target = selects.length ? selects[0].el : null;
+            if (!target) {
+              return JSON.stringify({ok:false,error:`Could not find a selector for "${originalField}".`});
+            }
+
+            if (target.tagName.toLowerCase() === 'select') {
+              const options = Array.from(target.options || []);
+              const best = options
+                .map((opt) => ({
+                  opt,
+                  score: scoreLabel(opt.textContent || opt.label || opt.value || '', optionTokens, optionQuery),
+                }))
+                .filter((entry) => entry.score > 0)
+                .sort((a, b) => b.score - a.score)[0];
+              if (!best) {
+                return JSON.stringify({ok:false,error:`Could not find option "${originalOption}".`});
+              }
+              target.value = best.opt.value;
+              target.dispatchEvent(new Event('input', {bubbles: true}));
+              target.dispatchEvent(new Event('change', {bubbles: true}));
+              return JSON.stringify({
+                ok:true,
+                field: originalField,
+                option: best.opt.textContent || best.opt.label || best.opt.value || originalOption,
+              });
+            }
+
+            target.click();
+            const optionSelector = '[role="option"], option, li, button';
+            const visibleOptions = Array.from(document.querySelectorAll(optionSelector))
+              .filter((el) => isVisible(el))
+              .map((el) => ({
+                el,
+                score: scoreLabel(el.innerText || el.textContent || el.getAttribute('aria-label') || '', optionTokens, optionQuery),
+              }))
+              .filter((entry) => entry.score > 0)
+              .sort((a, b) => b.score - a.score);
+            const chosen = visibleOptions[0];
+            if (!chosen) {
+              return JSON.stringify({ok:false,error:`Could not find option "${originalOption}".`});
+            }
+            chosen.el.click();
+            return JSON.stringify({
+              ok:true,
+              field: originalField,
+              option: chosen.el.innerText || chosen.el.textContent || chosen.el.getAttribute('aria-label') || originalOption,
+            });
+        }""",
+        {"field": field_query, "option": option_text},
+    )
+    result = json.loads(result_text or "{}")
+    if not result.get("ok"):
+        raise RuntimeError(result.get("error") or f"Could not select '{option_text}' from '{field_query}'.")
+    await asyncio.sleep(0.2)
+    state = await browser.get_browser_state_summary(include_screenshot=False)
+    return {
+        "field": field_query,
+        "option": result.get("option") or option_text,
+        "url": state.url,
+        "title": state.title,
+    }
+
+
+async def _set_toggle(browser: Browser, label: str, value: bool) -> dict:
+    page = await browser.must_get_current_page()
+    result_text = await page.evaluate(
+        """(payload) => {
+            const original = String(payload.label || '').trim();
+            const desired = Boolean(payload.value);
+            const normalize = (value) =>
+              String(value || '')
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, ' ')
+                .replace(/\\s+/g, ' ')
+                .trim();
+            const query = normalize(original);
+            const tokens = query.split(/\\s+/).filter(Boolean);
+            const isVisible = (el) => {
+              const rect = el.getBoundingClientRect();
+              const style = window.getComputedStyle(el);
+              return rect.width > 0
+                && rect.height > 0
+                && style.visibility !== 'hidden'
+                && style.display !== 'none';
+            };
+            const labelText = (el) => {
+              const values = [
+                el.getAttribute('aria-label'),
+                el.getAttribute('title'),
+                el.id ? (document.querySelector(`label[for="${el.id}"]`) || {}).innerText : '',
+                el.labels ? Array.from(el.labels).map((node) => node.innerText || node.textContent || '').join(' ') : '',
+                el.closest('label') ? (el.closest('label').innerText || el.closest('label').textContent || '') : '',
+                el.parentElement ? (el.parentElement.innerText || el.parentElement.textContent || '') : '',
+              ];
+              return values.filter(Boolean).join(' ').trim();
+            };
+            const score = (text) => {
+              const normalized = normalize(text);
+              let total = 0;
+              if (normalized === query) total += 70;
+              if (query && normalized.includes(query)) total += 30;
+              const allTokensPresent = tokens.length > 0 && tokens.every((token) => normalized.includes(token));
+              if (allTokensPresent) total += 18;
+              for (const token of tokens) {
+                if (normalized.includes(token)) total += 8;
+              }
+              return total;
+            };
+            const selector = 'input[type="checkbox"],input[type="radio"],[role="checkbox"],[role="switch"],[role="radio"]';
+            const candidates = Array.from(document.querySelectorAll(selector))
+              .filter((el) => isVisible(el))
+              .map((el) => ({el, score: score(labelText(el))}))
+              .filter((entry) => entry.score > 0)
+              .sort((a, b) => b.score - a.score);
+            const target = candidates.length ? candidates[0].el : null;
+            if (!target) {
+              return JSON.stringify({ok:false,error:`Could not find a toggle for "${original}".`});
+            }
+            const current = ('checked' in target) ? Boolean(target.checked) : String(target.getAttribute('aria-checked') || '').toLowerCase() === 'true';
+            if (current !== desired) {
+              target.click();
+            }
+            const after = ('checked' in target) ? Boolean(target.checked) : String(target.getAttribute('aria-checked') || '').toLowerCase() === 'true';
+            return JSON.stringify({
+              ok:true,
+              label: labelText(target),
+              checked: after,
+            });
+        }""",
+        {"label": label, "value": value},
+    )
+    result = json.loads(result_text or "{}")
+    if not result.get("ok"):
+        raise RuntimeError(result.get("error") or f"Could not update '{label}'.")
+    await asyncio.sleep(0.2)
+    state = await browser.get_browser_state_summary(include_screenshot=False)
+    return {
+        "label": result.get("label") or label,
+        "checked": bool(result.get("checked")),
+        "url": state.url,
+        "title": state.title,
+    }
+
+
+async def _press_key(browser: Browser, key: str) -> dict:
+    page = await browser.must_get_current_page()
+    await page.press(key)
+    await asyncio.sleep(0.12)
+    state = await browser.get_browser_state_summary(include_screenshot=False)
+    return {
+        "key": key,
+        "url": state.url,
+        "title": state.title,
+    }
+
+
 async def _open_route(browser: Browser, route: str) -> dict:
     state = await browser.get_browser_state_summary(include_screenshot=False)
     current_url = str(state.url or "").lower()
@@ -1094,6 +1768,50 @@ async def _open_route(browser: Browser, route: str) -> dict:
             return await _click_text(browser, "Messages", kind_hint="link")
         except Exception:
             return await _click_text(browser, "Messaging", kind_hint="link")
+
+    if route == "message_button":
+        page = await browser.must_get_current_page()
+        before_state = await browser.get_browser_state_summary(include_screenshot=False)
+        before_url = str(before_state.url or "")
+        before_title = str(before_state.title or "")
+        try:
+            click_result = await _click_text(browser, "Message", kind_hint="button")
+        except Exception:
+            click_result = await _click_text(browser, "Send message", kind_hint="button")
+        await asyncio.sleep(0.25)
+        verify_text = await page.evaluate(
+            """() => {
+                const candidates = Array.from(document.querySelectorAll('textarea,[contenteditable="true"],[role="textbox"],dialog,[role="dialog"]'));
+                const isVisible = (el) => {
+                  const rect = el.getBoundingClientRect();
+                  const style = window.getComputedStyle(el);
+                  return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+                };
+                const composer = candidates.find((el) => isVisible(el));
+                return JSON.stringify({
+                  hasComposer: Boolean(composer && (composer.matches('textarea,[contenteditable="true"],[role="textbox"]') || composer.querySelector?.('textarea,[contenteditable="true"],[role="textbox"]'))),
+                  hasDialog: Boolean(candidates.find((el) => isVisible(el) && (el.matches('dialog,[role="dialog"]')))),
+                });
+            }"""
+        )
+        verify = json.loads(verify_text or "{}")
+        state = await browser.get_browser_state_summary(include_screenshot=False)
+        changed = (
+            str(state.url or "") != before_url
+            or str(state.title or "") != before_title
+            or bool(verify.get("hasComposer"))
+            or bool(verify.get("hasDialog"))
+        )
+        if not changed:
+            raise RuntimeError("Clicked the Message button but no message composer appeared.")
+        return {
+            "route": route,
+            "url": state.url,
+            "title": state.title,
+            "composer_open": bool(verify.get("hasComposer")),
+            "dialog_open": bool(verify.get("hasDialog")),
+            **click_result,
+        }
 
     if route == "notifications":
         if "linkedin.com" in current_url or not current_url:
@@ -1215,6 +1933,66 @@ async def _open_route(browser: Browser, route: str) -> dict:
         state = await browser.get_browser_state_summary(include_screenshot=False)
         return {"route": route, "url": state.url, "title": state.title}
 
+    if route == "submit":
+        await page.press("Enter")
+        await asyncio.sleep(0.2)
+        state = await browser.get_browser_state_summary(include_screenshot=False)
+        return {"route": route, "url": state.url, "title": state.title}
+
+    if route == "escape":
+        await page.press("Escape")
+        await asyncio.sleep(0.12)
+        state = await browser.get_browser_state_summary(include_screenshot=False)
+        return {"route": route, "url": state.url, "title": state.title}
+
+    if route == "duplicate_tab":
+        await page.evaluate("() => window.open(window.location.href, '_blank')")
+        await asyncio.sleep(0.2)
+        state = await browser.get_browser_state_summary(include_screenshot=False)
+        return {"route": route, "url": state.url, "title": state.title}
+
+    if route == "home":
+        if not current_url:
+            raise RuntimeError("Cannot go home because there is no active page URL.")
+        parsed = urlparse(current_url)
+        target_url = f"{parsed.scheme}://{parsed.netloc}/"
+        await _open_url(browser, target_url)
+        state = await browser.get_browser_state_summary(include_screenshot=False)
+        return {"route": route, "url": state.url, "title": state.title}
+
+    if route == "history":
+        await _open_url(browser, "chrome://history")
+        state = await browser.get_browser_state_summary(include_screenshot=False)
+        return {"route": route, "url": state.url, "title": state.title}
+
+    if route == "downloads":
+        await _open_url(browser, "chrome://downloads")
+        state = await browser.get_browser_state_summary(include_screenshot=False)
+        return {"route": route, "url": state.url, "title": state.title}
+
+    if route == "bookmarks":
+        await _open_url(browser, "chrome://bookmarks")
+        state = await browser.get_browser_state_summary(include_screenshot=False)
+        return {"route": route, "url": state.url, "title": state.title}
+
+    if route == "zoom_in":
+        await page.press("Meta+=")
+        await asyncio.sleep(0.12)
+        state = await browser.get_browser_state_summary(include_screenshot=False)
+        return {"route": route, "url": state.url, "title": state.title}
+
+    if route == "zoom_out":
+        await page.press("Meta+-")
+        await asyncio.sleep(0.12)
+        state = await browser.get_browser_state_summary(include_screenshot=False)
+        return {"route": route, "url": state.url, "title": state.title}
+
+    if route == "zoom_reset":
+        await page.press("Meta+0")
+        await asyncio.sleep(0.12)
+        state = await browser.get_browser_state_summary(include_screenshot=False)
+        return {"route": route, "url": state.url, "title": state.title}
+
     if route == "scroll_top":
         result = await _scroll_container(page, mode="top")
         await asyncio.sleep(0.1)
@@ -1331,6 +2109,115 @@ async def _click_first_candidate(browser: Browser, kind: str, query: Optional[st
     }
 
 
+async def _click_nth_candidate(
+    browser: Browser,
+    kind: str,
+    query: Optional[str],
+    index: int,
+    open_in_new_tab: bool = False,
+) -> dict:
+    before_state = await browser.get_browser_state_summary(include_screenshot=False)
+    before_url = str(before_state.url or "")
+    before_title = str(before_state.title or "")
+    page = await browser.must_get_current_page()
+    result_text = await page.evaluate(
+        """(opts) => {
+            const kind = String(opts.kind || 'link');
+            const query = String(opts.query || '').trim().toLowerCase();
+            const index = Number(opts.index || 1);
+            const openInNewTab = Boolean(opts.open_in_new_tab);
+            const tokens = query.split(/\\s+/).filter(Boolean);
+            const selectors = {
+              link: 'a[href]',
+              result: 'a[href], button, [role="button"]',
+              button: 'button, [role="button"], input[type="button"], input[type="submit"]',
+              profile: 'a[href*="/in/"]',
+              video: 'a#video-title, a[href*="/watch"]',
+              tab: 'a[href], button, [role="tab"], [role="button"]',
+              option: '[role="option"], option, li, button',
+            };
+            const selector = selectors[kind] || selectors.link;
+            const isVisible = (el) => {
+              const rect = el.getBoundingClientRect();
+              const style = window.getComputedStyle(el);
+              return rect.width > 0
+                && rect.height > 0
+                && style.visibility !== 'hidden'
+                && style.display !== 'none';
+            };
+            const score = (el) => {
+              const text = (el.innerText || el.textContent || el.getAttribute('aria-label') || '').trim().toLowerCase();
+              if (!tokens.length) return 1;
+              let total = 0;
+              if (query && text.includes(query)) total += 20;
+              for (const token of tokens) {
+                if (text.includes(token)) total += 5;
+              }
+              return total;
+            };
+            const visible = Array.from(document.querySelectorAll(selector)).filter(isVisible);
+            if (!visible.length) {
+              return JSON.stringify({ok:false,error:`No visible candidate found for ${kind}.`});
+            }
+            let candidates = visible;
+            if (tokens.length) {
+              candidates = visible
+                .map((el) => ({el, score: score(el)}))
+                .filter((entry) => entry.score > 0)
+                .sort((a, b) => b.score - a.score)
+                .map((entry) => entry.el);
+            }
+            if (!candidates.length) {
+              return JSON.stringify({ok:false,error:`No matching candidate found for ${query || kind}.`});
+            }
+            const ordinalIndex = index < 0 ? candidates.length - 1 : Math.max(0, index - 1);
+            const target = candidates[ordinalIndex];
+            if (!target) {
+              return JSON.stringify({ok:false,error:`Only found ${candidates.length} matching candidate(s) for ${query || kind}.`});
+            }
+            const label = (target.innerText || target.textContent || target.getAttribute('aria-label') || '').trim();
+            const href = target.href || target.getAttribute('href') || '';
+            if (openInNewTab && href && target.tagName.toLowerCase() === 'a') {
+              window.open(href, '_blank');
+            } else {
+              target.click();
+            }
+            return JSON.stringify({ok:true,label,href,count:candidates.length});
+        }""",
+        {"kind": kind, "query": query or "", "index": index, "open_in_new_tab": open_in_new_tab},
+    )
+    result = json.loads(result_text or "{}")
+    if not result.get("ok"):
+        raise RuntimeError(result.get("error") or f"Could not click matching {kind}.")
+    await asyncio.sleep(0.5)
+    state = await browser.get_browser_state_summary(include_screenshot=False)
+    href = str(result.get("href") or "")
+    href_no_hash = href.split("#", 1)[0]
+    before_no_hash = before_url.split("#", 1)[0]
+    after_no_hash = str(state.url or "").split("#", 1)[0]
+    navigated = (
+        after_no_hash != before_no_hash
+        or str(state.title or "") != before_title
+        or (href_no_hash and href_no_hash in after_no_hash)
+        or (href_no_hash and after_no_hash in href_no_hash)
+        or open_in_new_tab
+    )
+    if kind in {"link", "profile", "video"} and href and not href.startswith("#") and not navigated:
+        raise RuntimeError(f"Clicked matching {kind} but the page did not change.")
+    return {
+        "kind": kind,
+        "query": query,
+        "index": index,
+        "count": result.get("count"),
+        "label": result.get("label") or f"Matching {kind}",
+        "href": href,
+        "before_url": before_url,
+        "url": state.url,
+        "title": state.title,
+        "opened_in_new_tab": open_in_new_tab,
+    }
+
+
 async def _scroll_page(browser: Browser, direction: str, amount: int) -> dict:
     page = await browser.must_get_current_page()
     result = await _scroll_container(page, direction=direction, amount=amount, mode="relative")
@@ -1360,15 +2247,21 @@ async def run_command(command: str, profile_directory: str) -> dict:
             intent.url,
             intent.open_in_new_tab,
             intent.search_query,
+            intent.fill_field,
+            intent.active_text,
+            intent.select_field,
+            intent.toggle_label,
             intent.scroll_text,
             intent.scroll_direction,
             intent.click_text,
             intent.open_first_video,
             intent.route,
             intent.click_first_kind,
+            intent.click_nth_kind,
             intent.profile_query,
             intent.video_query,
             intent.tab_index,
+            intent.key_press,
         ]
     ):
         return {"success": False, "error": "Unsupported browser command for direct browser-use helper."}
@@ -1543,15 +2436,21 @@ async def run_command_in_browser(command: str, browser: Browser) -> dict:
             intent.url,
             intent.open_in_new_tab,
             intent.search_query,
+            intent.fill_field,
+            intent.active_text,
+            intent.select_field,
+            intent.toggle_label,
             intent.scroll_text,
             intent.scroll_direction,
             intent.click_text,
             intent.open_first_video,
             intent.route,
             intent.click_first_kind,
+            intent.click_nth_kind,
             intent.profile_query,
             intent.video_query,
             intent.tab_index,
+            intent.key_press,
         ]
     ):
         return {"success": False, "error": "Unsupported browser command for direct browser-use helper."}
@@ -1575,6 +2474,31 @@ async def run_command_in_browser(command: str, browser: Browser) -> dict:
         if intent.search_query:
             search_result = await _fill_search(browser, intent.search_query)
             result["actions"].append({"tool": "search", "query": intent.search_query, **search_result})
+
+        if intent.fill_field and intent.fill_text is not None:
+            fill_result = await _fill_field(
+                browser,
+                intent.fill_field,
+                intent.fill_text,
+                submit=intent.fill_submit,
+            )
+            result["actions"].append({"tool": "fill_field", **fill_result})
+
+        if intent.active_text:
+            active_fill_result = await _fill_active_field(
+                browser,
+                intent.active_text,
+                submit=intent.active_submit,
+            )
+            result["actions"].append({"tool": "fill_active", **active_fill_result})
+
+        if intent.select_field and intent.select_option:
+            select_result = await _select_option(browser, intent.select_field, intent.select_option)
+            result["actions"].append({"tool": "select_option", **select_result})
+
+        if intent.toggle_label and intent.toggle_value is not None:
+            toggle_result = await _set_toggle(browser, intent.toggle_label, intent.toggle_value)
+            result["actions"].append({"tool": "set_toggle", **toggle_result})
 
         if intent.open_first_video:
             open_result = await _open_first_youtube_video(browser)
@@ -1602,6 +2526,16 @@ async def run_command_in_browser(command: str, browser: Browser) -> dict:
                     **first_result,
                 }
             )
+
+        if intent.click_nth_kind and intent.click_nth_index is not None:
+            nth_result = await _click_nth_candidate(
+                browser,
+                intent.click_nth_kind,
+                intent.click_nth_query,
+                intent.click_nth_index,
+                open_in_new_tab=intent.click_nth_new_tab,
+            )
+            result["actions"].append({"tool": "click_nth", **nth_result})
 
         if intent.profile_query:
             profile_result = await _click_first_candidate(browser, "profile", intent.profile_query)
@@ -1638,6 +2572,10 @@ async def run_command_in_browser(command: str, browser: Browser) -> dict:
         if intent.click_text:
             click_result = await _click_text(browser, intent.click_text, intent.click_kind_hint)
             result["actions"].append({"tool": "click_text", **click_result})
+
+        if intent.key_press:
+            key_result = await _press_key(browser, intent.key_press)
+            result["actions"].append({"tool": "key_press", **key_result})
 
         state = await browser.get_browser_state_summary(include_screenshot=False)
         result["url"] = state.url

@@ -199,6 +199,20 @@ By default, browser commands now use the local macOS + Chrome tool path:
 - Chrome interactions use the Apple Events browser tools in `src/tool_runtime/tools/browser.py`
 - explicit `read ...` voice commands use a direct page-text extraction path and ElevenLabs TTS instead of browser-use fallback when `ELEVENLABS_API_KEY` is available
 
+### Generic Direct Browser Commands
+
+The direct helper now covers a broader set of site-agnostic interactions before anything falls back to slower planning. Supported command shapes include:
+
+- navigation: `open github`, `search for lo-fi beats on youtube`, `back`, `forward`, `reload`, `go home`
+- tabs and browser surfaces: `new tab`, `close tab`, `duplicate tab`, `next tab`, `go to tab 3`, `open history`, `open downloads`, `open bookmarks`
+- scrolling and focus: `scroll down`, `scroll to comments`, `go to top`, `focus address bar`
+- ranked clicks: `click the first result`, `open the third link in a new tab`, `click the second button`
+- generic click targets: `click continue`, `open view profile`, `accept cookies`, `dismiss popup`
+- text entry: `type hello in search box`, `fill email with jay@example.com`, `fill message with sounds good and submit`
+- active-field dictation: `type sounds good`, `write thanks for the update`
+- selection controls: `select United States from country`, `set sort to newest`, `check remember me`, `uncheck email updates`
+- key presses and quick actions: `press command l`, `submit`, `escape`, `zoom in`, `zoom out`, `reset zoom`
+
 The heavier `browser-use` backend is now opt-in only. To enable it explicitly:
 
 ```bash

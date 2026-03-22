@@ -47,7 +47,7 @@ STATUS_STYLES = {
     "processing": {
         "dot": (0.57, 0.76, 0.99),
         "line": (0.64, 0.78, 1.00),
-        "label": "Tinkering",
+        "label": "Working",
         "chip": (0.24, 0.31, 0.40),
         "chip_alpha": 0.68,
     },
@@ -159,6 +159,7 @@ class VoiceOverlay:
         self._processing_active = False
         self._processing_glyph_index = 0
         self._processing_glyph_direction = 1
+        self._busy_started_at: Optional[float] = None
 
         width, height = self._compact_size
         frame = NSScreen.mainScreen().visibleFrame()
@@ -416,13 +417,20 @@ class VoiceOverlay:
             transcript_type = event.payload.get("kind", "partial")
             if transcript_type == "partial":
                 self.state.detail = "Listening..."
-                if self.state.status not in ("processing", "stopped", "error"):
+                if self.state.status not in ("processing", "warming", "speaking", "stopped", "error"):
                     self.state.status = "listening"
             else:
                 self.state.detail = "Command captured"
         elif event.type == "agent_status":
+            previous_status = self.state.status
             self.state.status = event.payload.get("state", self.state.status)
             self.state.detail = event.payload.get("step") or event.payload.get("detail", self.state.detail)
+            busy_states = {"processing", "warming", "speaking"}
+            if self.state.status in busy_states:
+                if previous_status not in busy_states or self._busy_started_at is None:
+                    self._busy_started_at = time.time()
+            else:
+                self._busy_started_at = None
 
         self._last_activity_at = time.time()
         self.refresh_ui()
@@ -490,7 +498,7 @@ class VoiceOverlay:
                     0.88,
                 ).CGColor()
             )
-            self.activity_glow.setAlphaValue_(0.52 + (phase * 0.18))
+            self.activity_glow.setAlphaValue_(0.72 + (phase * 0.16))
         elif self.state.status == "warming":
             self._processing_active = False
             phase = (math.sin(self._pulse_tick / 6.0) + 1.0) / 2.0
@@ -647,7 +655,8 @@ class VoiceOverlay:
 
         if self.state.status == "processing":
             self.detail_symbol_label.setHidden_(True)
-            self.detail_label.setHidden_(True)
+            self.detail_label.setHidden_(False)
+            self.detail_label.setFrame_(NSMakeRect(154, 92, 190, 14))
         else:
             self.detail_symbol_label.setHidden_(True)
             self.detail_label.setHidden_(False)
@@ -678,9 +687,11 @@ class VoiceOverlay:
         if self.state.status == "processing":
             self.detail_symbol_label.setHidden_(True)
             self.detail_symbol_label.setStringValue_("")
-            self.detail_label.setStringValue_("")
-            self.detail_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(0.70, 1.0))
-            self.detail_label.setFrame_(NSMakeRect(164, 70, 0, 16))
+            elapsed = 0.0 if self._busy_started_at is None else max(0.0, time.time() - self._busy_started_at)
+            detail = (self.state.detail or "Working in browser").strip()
+            self.detail_label.setStringValue_("{0} ({1:.1f}s)".format(detail, elapsed))
+            self.detail_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(0.78, 1.0))
+            self.detail_label.setFrame_(NSMakeRect(146, 70, 190, 16))
             return
 
         self.detail_symbol_label.setHidden_(True)

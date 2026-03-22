@@ -44,6 +44,7 @@ _ACTION_PREFIXES = (
     "go forward",
     "reload ",
     "refresh ",
+    "duplicate ",
     "close ",
     "new tab",
     "open new tab",
@@ -55,8 +56,12 @@ _ACTION_PREFIXES = (
     "switch to ",
     "focus ",
     "press ",
+    "submit ",
+    "enter ",
     "open ",
     "go to ",
+    "turn on ",
+    "turn off ",
     "go down ",
     "go down to ",
     "search ",
@@ -65,6 +70,14 @@ _ACTION_PREFIXES = (
     "find ",
     "look up ",
     "check ",
+    "uncheck ",
+    "enable ",
+    "disable ",
+    "select ",
+    "choose ",
+    "set ",
+    "accept ",
+    "reject ",
     "show ",
     "show me ",
     "click ",
@@ -77,13 +90,22 @@ _ACTION_PREFIXES = (
     "mute",
     "unmute",
     "fullscreen",
+    "history",
+    "downloads",
+    "bookmarks",
+    "home",
+    "zoom in",
+    "zoom out",
+    "reset zoom",
     "enter fullscreen",
     "exit fullscreen",
     "go fullscreen",
     "message ",
     "reply ",
     "send ",
+    "say ",
     "type ",
+    "fill ",
     "write ",
     "read ",
     "open my ",
@@ -114,7 +136,18 @@ _ACTION_KEYWORDS = (
     "back",
     "forward",
     "fullscreen",
-)
+    "history",
+    "downloads",
+    "bookmarks",
+    "home",
+    "zoom",
+    "dropdown",
+    "checkbox",
+    "toggle",
+    "switch",
+    "field",
+    "input",
+    )
 
 _NON_COMMAND_PREFIXES = (
     "i ",
@@ -193,7 +226,7 @@ def should_execute_final_transcript(text: str, source: str) -> CommandGateDecisi
         stripped = stripped[5:].strip()
 
     if re.match(
-        r"^you\s+(?:open|go|search|find|look|click|scroll|read|check|show|press|close|play|pause|message|reply|send|type|write)\b",
+        r"^you\s+(?:open|go|search|find|look|click|scroll|read|check|show|press|close|play|pause|message|reply|send|say|type|write)\b",
         stripped,
     ):
         stripped = re.sub(r"^you\s+", "", stripped, count=1).strip()
@@ -220,12 +253,17 @@ def should_execute_final_transcript(text: str, source: str) -> CommandGateDecisi
         "new tab",
         "next tab",
         "previous tab",
+        "submit",
+        "history",
+        "downloads",
+        "bookmarks",
+        "home",
     }:
         return CommandGateDecision(True, "single-action")
 
     if _contains_any_phrase(stripped, _ACTION_KEYWORDS) and _contains_any_phrase(
         stripped,
-        ("open", "click", "search", "find", "check", "show", "go", "message"),
+        ("open", "click", "search", "find", "check", "show", "go", "message", "select", "choose", "type", "press", "fill", "submit"),
     ):
         if _token_count(stripped) > 8:
             return CommandGateDecision(False, "long-ambient-command")
