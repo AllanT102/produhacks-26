@@ -16,6 +16,14 @@ from src.tool_runtime.tools.screenshot import screenshot
 from src.tool_runtime.tools.scroll import scroll
 from src.tool_runtime.tools.targets import click_target, propose_targets
 from src.tool_runtime.tools.volume import set_volume
+from src.tool_runtime.tools.spotify import (
+    spotify_get_current_track,
+    spotify_next,
+    spotify_pause,
+    spotify_play,
+    spotify_previous,
+    spotify_resume,
+)
 
 # Maps tool name → callable. Tool names must match the Claude tool schemas exactly.
 REGISTRY: dict = {
@@ -37,4 +45,10 @@ REGISTRY: dict = {
     "browser_fill_ref": browser_fill_ref,
     "propose_targets": propose_targets,
     "click_target": click_target,
+    "spotify_play": spotify_play,
+    "spotify_pause": spotify_pause,
+    "spotify_resume": spotify_resume,
+    "spotify_next": spotify_next,
+    "spotify_previous": spotify_previous,
+    "spotify_get_current_track": spotify_get_current_track,
 }

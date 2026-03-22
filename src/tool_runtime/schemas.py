@@ -273,6 +273,48 @@ TOOLS = [
         },
     },
     {
+        "name": "spotify_play",
+        "description": (
+            "Search for and play a track, artist, album, or playlist on Spotify. "
+            "Handles the full search and click automatically — no follow-up action needed."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query, e.g. 'Bohemian Rhapsody', 'Taylor Swift', 'Chill playlist'",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "spotify_pause",
+        "description": "Pause the currently playing Spotify track.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "spotify_resume",
+        "description": "Resume Spotify playback.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "spotify_next",
+        "description": "Skip to the next track in Spotify.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "spotify_previous",
+        "description": "Go back to the previous track in Spotify.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "spotify_get_current_track",
+        "description": "Return the currently playing track name, artist, album, and playback state from Spotify.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
         "name": "task_complete",
         "description": (
             "Signal that the user's goal has been fully achieved. "

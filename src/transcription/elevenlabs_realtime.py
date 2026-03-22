@@ -68,6 +68,7 @@ class ElevenLabsRealtimeTranscriptionService:
 
         self.microphone.start()
         self._running = True
+        reconnect_delay = 1.0
         params = {
             "model_id": self.config.model_id,
             "audio_format": "pcm_16000",
@@ -84,25 +85,40 @@ class ElevenLabsRealtimeTranscriptionService:
         url = "{}?{}".format(self.config.endpoint, urlencode(params))
 
         try:
-            async with websockets.connect(
-                url,
-                additional_headers={"xi-api-key": api_key},
-                ping_interval=20,
-                ping_timeout=20,
-                max_size=None,
-            ) as websocket:
-                sender = asyncio.create_task(self._send_audio_loop(websocket))
-                receiver = asyncio.create_task(self._receive_loop(websocket))
-                done, pending = await asyncio.wait(
-                    {sender, receiver},
-                    return_when=asyncio.FIRST_EXCEPTION,
-                )
-                for task in pending:
-                    task.cancel()
-                for task in done:
-                    exc = task.exception()
-                    if exc is not None:
-                        raise exc
+            while self._running:
+                try:
+                    async with websockets.connect(
+                        url,
+                        additional_headers={"xi-api-key": api_key},
+                        ping_interval=20,
+                        ping_timeout=20,
+                        max_size=None,
+                    ) as websocket:
+                        reconnect_delay = 1.0  # reset on successful connection
+                        sender = asyncio.create_task(self._send_audio_loop(websocket))
+                        receiver = asyncio.create_task(self._receive_loop(websocket))
+                        done, pending = await asyncio.wait(
+                            {sender, receiver},
+                            return_when=asyncio.FIRST_EXCEPTION,
+                        )
+                        for task in pending:
+                            task.cancel()
+                        for task in done:
+                            exc = task.exception()
+                            if exc is not None:
+                                raise exc
+                except Exception as exc:
+                    import websockets.exceptions
+                    if isinstance(exc, (websockets.exceptions.ConnectionClosedOK,
+                                        websockets.exceptions.ConnectionClosedError)):
+                        if not self._running:
+                            break
+                        print(f"[elevenlabs] connection closed ({exc}), reconnecting in {reconnect_delay:.1f}s")
+                        await asyncio.sleep(reconnect_delay)
+                        reconnect_delay = min(reconnect_delay * 2, 30.0)
+                        self._sent_previous_text = False
+                        continue
+                    raise
         finally:
             self.microphone.stop()
             self._running = False
@@ -112,31 +128,43 @@ class ElevenLabsRealtimeTranscriptionService:
         self._running = False
 
     async def _send_audio_loop(self, websocket) -> None:
-        while self._running:
-            chunk = await self.microphone.read_chunk(timeout=0.5)
-            if chunk is None:
-                continue
-            await websocket.send(json.dumps(self._build_audio_message(chunk)))
+        try:
+            while self._running:
+                chunk = await self.microphone.read_chunk(timeout=0.5)
+                if chunk is None:
+                    continue
+                await websocket.send(json.dumps(self._build_audio_message(chunk)))
+        except Exception as exc:
+            import websockets.exceptions
+            if isinstance(exc, websockets.exceptions.ConnectionClosedOK):
+                return  # server closed gracefully
+            raise
 
     async def _receive_loop(self, websocket) -> None:
-        while self._running:
-            raw_message = await websocket.recv()
-            payload = json.loads(raw_message)
-            message_type = payload.get("message_type", "")
+        try:
+            while self._running:
+                raw_message = await websocket.recv()
+                payload = json.loads(raw_message)
+                message_type = payload.get("message_type", "")
 
-            if message_type == "session_started":
-                continue
+                if message_type == "session_started":
+                    continue
 
-            if message_type == "partial_transcript":
-                await self._handle_partial(payload.get("text", ""))
-                continue
+                if message_type == "partial_transcript":
+                    await self._handle_partial(payload.get("text", ""))
+                    continue
 
-            if message_type in {"committed_transcript", "committed_transcript_with_timestamps"}:
-                await self._handle_final(payload.get("text", ""))
-                continue
+                if message_type in {"committed_transcript", "committed_transcript_with_timestamps"}:
+                    await self._handle_final(payload.get("text", ""))
+                    continue
 
-            if "error" in message_type or message_type.endswith("_error"):
-                raise RuntimeError(payload.get("message") or payload.get("error") or str(payload))
+                if "error" in message_type or message_type.endswith("_error"):
+                    raise RuntimeError(payload.get("message") or payload.get("error") or str(payload))
+        except Exception as exc:
+            import websockets.exceptions
+            if isinstance(exc, websockets.exceptions.ConnectionClosedOK):
+                return  # server closed gracefully
+            raise
 
     def _build_audio_message(self, chunk: AudioChunk) -> dict:
         message = {

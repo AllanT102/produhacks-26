@@ -1,4 +1,4 @@
-"""Agentic planner: route commands through the warm browser-use backend."""
+"""Agentic planner: route commands through the unified Mac agent."""
 
 import time
 
@@ -6,22 +6,12 @@ from src.shared.events import AgentCommand
 from src.shared.timing import elapsed_ms
 
 
-def _load_browser_use_backend():
-    """Import browser-use lazily so normal startup stays fast."""
-    from src.agent.browser_use_backend import execute_command_with_browser_use, should_use_browser_use
-
-    return execute_command_with_browser_use, should_use_browser_use
-
-
 async def execute_command(command: AgentCommand) -> str:
-    """Run a single command through the persistent browser-use backend."""
+    """Run a single command through the Mac agent."""
     started_at = time.perf_counter()
-    execute_command_with_browser_use, should_use_browser_use = _load_browser_use_backend()
+    from src.agent.mac_agent import execute_command_with_mac_agent
 
-    if not should_use_browser_use(command):
-        return "browser-use is unavailable. Ensure BROWSER_USE_ENABLED=1 and .venv-browseruse is set up."
-
-    print(f"[planner] routing to browser-use backend for goal={command.text!r}")
-    result = await execute_command_with_browser_use(command)
-    print("[timing] planner browser-use path took {:.1f}ms".format(elapsed_ms(started_at)))
+    print(f"[planner] routing to mac agent for goal={command.text!r}")
+    result = await execute_command_with_mac_agent(command)
+    print("[timing] planner mac-agent path took {:.1f}ms".format(elapsed_ms(started_at)))
     return result
