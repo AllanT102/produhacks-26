@@ -115,6 +115,28 @@ To use a different model size:
 WHISPER_MODEL_SIZE=small make run-whisper
 ```
 
+### Run with ElevenLabs realtime transcription
+
+Set your API key first:
+
+```bash
+export ELEVENLABS_API_KEY=your_key_here
+```
+
+Then run:
+
+```bash
+make run-elevenlabs
+```
+
+Optional tuning:
+
+```bash
+ELEVENLABS_PREVIOUS_TEXT="Mac voice control and YouTube commands." make run-elevenlabs
+```
+
+This backend uses ElevenLabs realtime speech-to-text over WebSockets instead of the local Whisper loop.
+
 The app entry point logs transcript events and sends finalized commands into a simple agent loop.
 It also launches the desktop overlay automatically.
 If `PyObjC` is not installed yet, the app falls back to headless mode and prints a warning.

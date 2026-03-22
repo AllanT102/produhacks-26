@@ -13,6 +13,10 @@ from src.agent.controller import AgentController
 from src.agent.loop import run_agent_loop
 from src.shared.events import AgentCommand, TranscriptEvent, UIEvent
 from src.transcription.backend import FasterWhisperBackend, MockTranscriptionBackend
+from src.transcription.elevenlabs_realtime import (
+    ElevenLabsRealtimeConfig,
+    ElevenLabsRealtimeTranscriptionService,
+)
 from src.transcription.mic_capture import SoundDeviceMicrophone
 from src.transcription.segmenter import SegmenterConfig, UtteranceSegmenter
 from src.transcription.service import TranscriptionService
@@ -78,6 +82,37 @@ def build_transcription_backend():
     return MockTranscriptionBackend(text=mock_text)
 
 
+def build_elevenlabs_service(
+    agent_queue: "asyncio.Queue[AgentCommand]",
+    on_event,
+) -> ElevenLabsRealtimeTranscriptionService:
+    """Construct the ElevenLabs realtime transcription service from environment settings."""
+    return ElevenLabsRealtimeTranscriptionService(
+        microphone=SoundDeviceMicrophone(
+            sample_rate=int(os.getenv("MIC_SAMPLE_RATE", "16000")),
+            channels=int(os.getenv("MIC_CHANNELS", "1")),
+            chunk_ms=int(os.getenv("MIC_CHUNK_MS", "250")),
+        ),
+        agent_queue=agent_queue,
+        config=ElevenLabsRealtimeConfig(
+            model_id=os.getenv("ELEVENLABS_MODEL_ID", "scribe_v2_realtime"),
+            language_code=os.getenv("ELEVENLABS_LANGUAGE_CODE", "en"),
+            include_timestamps=os.getenv("ELEVENLABS_INCLUDE_TIMESTAMPS", "0") == "1",
+            include_language_detection=os.getenv("ELEVENLABS_INCLUDE_LANGUAGE_DETECTION", "0") == "1",
+            commit_strategy=os.getenv("ELEVENLABS_COMMIT_STRATEGY", "vad"),
+            vad_silence_threshold_secs=float(os.getenv("ELEVENLABS_VAD_SILENCE_THRESHOLD_SECS", "0.7")),
+            vad_threshold=float(os.getenv("ELEVENLABS_VAD_THRESHOLD", "0.45")),
+            min_speech_duration_ms=int(os.getenv("ELEVENLABS_MIN_SPEECH_DURATION_MS", "120")),
+            min_silence_duration_ms=int(os.getenv("ELEVENLABS_MIN_SILENCE_DURATION_MS", "160")),
+            previous_text=os.getenv(
+                "ELEVENLABS_PREVIOUS_TEXT",
+                "Voice commands for Mac control and YouTube.",
+            ),
+        ),
+        on_event=on_event,
+    )
+
+
 def load_overlay():
     """Load the optional desktop overlay."""
     try:
@@ -96,6 +131,7 @@ def main() -> None:
     shared: Dict[str, Any] = {}
     overlay_class = load_overlay()
     fake_transcript = os.getenv("FAKE_TRANSCRIPT_TEXT", "").strip()
+    transcription_backend_name = os.getenv("TRANSCRIPTION_BACKEND", "mock").strip().lower()
     input_mode = os.getenv("DEV_INPUT_MODE", "").strip().lower()
     wispr_mode = input_mode == "wispr"
     type_mode = input_mode == "type"
@@ -211,13 +247,19 @@ def main() -> None:
             elif wispr_mode:
                 print("[main] Wispr mode active; transcription service disabled")
             else:
-                service = TranscriptionService(
-                    microphone=SoundDeviceMicrophone(),
-                    backend=build_transcription_backend(),
-                    segmenter=UtteranceSegmenter(SegmenterConfig()),
-                    agent_queue=agent_queue,
-                    on_event=lambda event: log_event(event, ui_queue),
-                )
+                if transcription_backend_name == "elevenlabs":
+                    service = build_elevenlabs_service(
+                        agent_queue=agent_queue,
+                        on_event=lambda event: log_event(event, ui_queue),
+                    )
+                else:
+                    service = TranscriptionService(
+                        microphone=SoundDeviceMicrophone(),
+                        backend=build_transcription_backend(),
+                        segmenter=UtteranceSegmenter(SegmenterConfig()),
+                        agent_queue=agent_queue,
+                        on_event=lambda event: log_event(event, ui_queue),
+                    )
                 shared["service"] = service
 
             try:

@@ -2,3 +2,4 @@
 .venv-browseruse/
 __pycache__/
 *.pyc
+.env.local

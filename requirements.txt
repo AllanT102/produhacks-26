@@ -7,3 +7,4 @@ pyobjc-core
 pyobjc-framework-Quartz
 pyobjc-framework-Cocoa>=10.3
 pyobjc-framework-Vision
+websockets>=12.0
