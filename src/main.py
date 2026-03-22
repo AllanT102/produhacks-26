@@ -151,9 +151,11 @@ def main() -> None:
         async def backend_runner() -> None:
             agent_queue: "asyncio.Queue[AgentCommand]" = asyncio.Queue()
             controller = AgentController()
+            shutdown_event = asyncio.Event()
 
             shared["agent_queue"] = agent_queue
             shared["controller"] = controller
+            shared["shutdown_event"] = shutdown_event
 
             publish_ui_event(
                 ui_queue,
@@ -211,8 +213,7 @@ def main() -> None:
                 elif type_mode:
                     await typed_task
                 elif wispr_mode:
-                    while True:
-                        await asyncio.sleep(0.2)
+                    await shutdown_event.wait()
             finally:
                 if service is not None:
                     service.stop()
@@ -261,12 +262,15 @@ def main() -> None:
         loop = shared["loop"]
         agent_queue = shared["agent_queue"]
         service = shared.get("service")
+        shutdown_event = shared.get("shutdown_event")
 
         def stop_everything() -> None:
             controller.request_stop()
             clear_agent_queue(agent_queue)
             if service is not None:
                 service.stop()
+            if shutdown_event is not None:
+                shutdown_event.set()
 
         publish_ui_event(
             ui_queue,

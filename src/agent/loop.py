@@ -6,9 +6,7 @@ from typing import Awaitable, Callable, Optional
 
 from src.agent.controller import AgentController
 from src.agent.planner import execute_command
-from src.agent.router import route_direct_command
 from src.shared.events import AgentCommand
-from src.tool_runtime.runtime import execute_tool
 
 StatusCallback = Callable[[str, str], Awaitable[None]]
 _MIN_PROCESSING_VISIBLE_SECONDS = 0.55
@@ -38,8 +36,7 @@ async def run_agent_loop(
 ) -> None:
     """Consume finalized transcript commands and run the planner with status updates.
 
-    Any commands that arrive while the agent is busy are drained and discarded
-    so the same utterance cannot trigger multiple back-to-back executions.
+    Commands that arrive while the agent is busy stay queued and run next.
     """
     while True:
         command = await agent_queue.get()
@@ -48,19 +45,6 @@ async def run_agent_loop(
             await _emit_status(on_status, "processing", command.text)
             print(f"[agent] received transcript_id={command.transcript_id} text={command.text!r}")
             started_at = time.perf_counter()
-            direct_route = route_direct_command(command)
-            if direct_route is not None:
-                print("[router] direct route selected")
-                for call in direct_route.tool_calls:
-                    result = await asyncio.to_thread(execute_tool, call)
-                    if not result.ok:
-                        raise RuntimeError(result.error.get("message", "direct route failed"))
-                summary = direct_route.summary
-                print("[timing] command total took {:.1f}ms".format((time.perf_counter() - started_at) * 1000.0))
-                print(f"[agent] result={summary}")
-                await _emit_ready_when_visible(on_status, started_at)
-                continue
-
             task = asyncio.create_task(execute_command(command))
             controller.set_current_task(task)
             summary = await task
@@ -76,10 +60,3 @@ async def run_agent_loop(
         finally:
             controller.set_current_task(None)
             agent_queue.task_done()
-            drained = 0
-            while not agent_queue.empty():
-                agent_queue.get_nowait()
-                agent_queue.task_done()
-                drained += 1
-            if drained:
-                print(f"[agent] discarded {drained} command(s) that arrived during execution")

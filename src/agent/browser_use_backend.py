@@ -1,11 +1,10 @@
-"""Browser-only backend powered by browser-use in a separate Python environment."""
+"""Browser-use backend powered by a warm persistent server in a separate Python environment."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import os
-import re
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -13,7 +12,6 @@ from uuid import uuid4
 
 from src.shared.events import AgentCommand
 from src.shared.timing import elapsed_ms
-from src.tool_runtime.tools.browser import browser_get_page
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_PYTHON = _REPO_ROOT / ".venv-browseruse" / "bin" / "python"
@@ -22,49 +20,6 @@ _SERVER_TIMEOUT_SECONDS = float(os.getenv("BROWSER_USE_TIMEOUT", "45"))
 
 _SERVER_PROCESS: Optional[asyncio.subprocess.Process] = None
 _SERVER_LOCK = asyncio.Lock()
-
-_BROWSER_HINTS = (
-    "browser",
-    "chrome",
-    "google chrome",
-    "youtube",
-    "linkedin",
-    "website",
-    "web page",
-    "webpage",
-    "tab",
-    ".com",
-    ".org",
-    ".io",
-)
-
-_DESKTOP_HINTS = (
-    "finder",
-    "folder",
-    "file",
-    "desktop",
-    "dock",
-    "slack",
-    "terminal",
-    "ghostty",
-    "brightness",
-    "volume",
-)
-
-_BROWSER_ACTION_HINTS = (
-    "open",
-    "go to",
-    "search",
-    "scroll",
-    "click",
-    "subscribe",
-    "follow",
-    "type",
-    "find",
-    "play",
-    "pause",
-)
-
 
 def browser_use_python() -> Path:
     override = os.getenv("BROWSER_USE_PYTHON")
@@ -78,26 +33,10 @@ def browser_use_available() -> bool:
 
 
 def should_use_browser_use(command: AgentCommand) -> bool:
+    del command
     if os.getenv("BROWSER_USE_ENABLED", "1").strip().lower() in {"0", "false", "no"}:
         return False
-    if not browser_use_available():
-        return False
-
-    text = command.text.strip().lower()
-    if not text:
-        return False
-
-    if any(hint in text for hint in _DESKTOP_HINTS) and not any(hint in text for hint in _BROWSER_HINTS):
-        return False
-    if any(hint in text for hint in _BROWSER_HINTS):
-        return True
-
-    if any(hint in text for hint in _BROWSER_ACTION_HINTS):
-        page = browser_get_page()
-        if page.get("ok") and "chrome" not in str(page.get("error", "")).lower():
-            return True
-
-    return False
+    return browser_use_available()
 
 
 def _extract_browser_use_summary(payload: dict[str, Any]) -> str:
