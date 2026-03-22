@@ -4,6 +4,7 @@ import asyncio
 import itertools
 import os
 import queue
+import sys
 import threading
 from typing import Any, Dict
 
@@ -183,16 +184,30 @@ def main() -> None:
             if fake_transcript:
                 await submit_command_text(fake_transcript, "fake_tx_000001")
             elif type_mode:
-                async def typed_loop() -> None:
+                event_loop = asyncio.get_event_loop()
+
+                def stdin_reader() -> None:
                     counter = 1
                     while True:
-                        line = await asyncio.to_thread(input, "type> ")
+                        try:
+                            sys.stdout.write("type> ")
+                            sys.stdout.flush()
+                            line = sys.stdin.readline()
+                        except (EOFError, OSError):
+                            break
+                        if not line:
+                            break
+                        line = line.strip()
                         if not line:
                             continue
-                        await submit_command_text(line, "typed_tx_{:06d}".format(counter))
+                        tx_id = "typed_tx_{:06d}".format(counter)
                         counter += 1
+                        event_loop.call_soon_threadsafe(
+                            lambda t=line, i=tx_id: asyncio.create_task(submit_command_text(t, i))
+                        )
 
-                typed_task = asyncio.create_task(typed_loop())
+                stdin_thread = threading.Thread(target=stdin_reader, daemon=True)
+                stdin_thread.start()
             elif wispr_mode:
                 print("[main] Wispr mode active; transcription service disabled")
             else:
@@ -208,20 +223,12 @@ def main() -> None:
             try:
                 if service is not None:
                     await service.start()
-                elif type_mode:
-                    await typed_task
-                elif wispr_mode:
+                else:
                     while True:
                         await asyncio.sleep(0.2)
             finally:
                 if service is not None:
                     service.stop()
-                if type_mode and typed_task is not None:
-                    typed_task.cancel()
-                    try:
-                        await typed_task
-                    except asyncio.CancelledError:
-                        pass
                 consumer_task.cancel()
                 try:
                     await consumer_task
