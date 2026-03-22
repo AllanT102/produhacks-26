@@ -12,6 +12,12 @@ from src.tool_runtime.tools.browser import browser_extract_text
 StatusCallback = Callable[[str, str], Awaitable[None]]
 
 _POLITE_PREFIXES = (
+    "hi, ",
+    "hi ",
+    "ok, ",
+    "ok ",
+    "okay, ",
+    "okay ",
     "please ",
     "can you ",
     "could you ",
