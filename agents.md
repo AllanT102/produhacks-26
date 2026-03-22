@@ -2,281 +2,255 @@
 
 ## Goal
 
-Build a voice-driven Mac control system that can understand a spoken request, reason over the current screen, and execute UI actions such as scroll, click, type, and keyboard shortcuts.
+Build a voice-driven Mac control system that feels immediate in the common case and still general enough to control arbitrary desktop and browser workflows.
 
-The core demo flow is YouTube control:
+The system should not depend on site-specific hardcoded flows for normal operation. It should rely on:
 
-- "Scroll down"
-- "Search for lo-fi beats"
-- "Open the first result"
-- "Pause"
-- "Go fullscreen"
+- a fast transcription layer
+- a lightweight command router
+- a general planner over tools
+- a deterministic executor
 
-The system should behave like a general computer-use agent, but the first-class experience is browsing and controlling YouTube with voice.
+## Current Reality
 
-## System Shape
+The main usability problem is latency, not capability.
 
-The system is easiest to reason about as three cooperating layers:
+A voice control loop feels broken if:
+
+- the first action starts after 5 to 20 seconds
+- every browser command launches a separate automation browser session
+- the planner spends multiple expensive LLM rounds discovering obvious actions
+
+The architecture should therefore optimize for:
+
+1. fast first action
+2. generic tool use
+3. minimal planner rounds
+4. deterministic execution
+
+## Recommended System Shape
 
 ### 0. Transcription Runtime
-
-The app should include an always-on transcription runtime that starts when the app launches and can run continuously in the background.
 
 Responsibilities:
 
 - capture microphone audio continuously
-- produce partial and final transcripts
-- detect likely command boundaries
-- forward finalized commands to the planner
-- stay simple and always-on for the hackathon version
+- emit partial transcripts for UI only
+- emit final transcripts for execution
+- hand final transcripts to the command router
 
-This layer is not the reasoning agent. Its job is to turn raw speech into structured utterance events that the planner can consume.
+This layer should not decide what action to take.
 
-### 1. Planner
-
-The planner is the reasoning layer.
+### 1. Command Router
 
 Responsibilities:
 
-- Accept a natural-language voice command transcript
-- Track short-lived task context
-- Inspect screen state via perception tools
-- Decide the next UI action
-- Call tool APIs
-- Recover from uncertainty by re-checking the screen
-- Stop when the task is complete or when confidence is too low
+- classify the utterance quickly
+- decide whether the command is:
+  - a direct primitive
+  - a browser task
+  - a desktop task
+  - a planner task
+- choose the cheapest valid execution path
 
-This agent should not directly contain platform-specific automation code. It should produce structured tool calls against a stable API.
+This layer should be fast and shallow. It is not a full planner.
 
-### 2. Executor
+Examples of direct primitives:
 
-The executor is the automation layer.
+- `stop`
+- `scroll down`
+- `scroll up`
+- `pause`
+- `open chrome`
+- `open youtube.com`
+- `volume up`
+- `brightness down`
+
+These are generic commands, not app-specific hacks.
+
+### 2. Planner
 
 Responsibilities:
 
-- Receive structured tool calls
-- Execute MacOS interactions
-- Return structured results
-- Capture screenshots and element candidates
-- Report failures, timing issues, and missing permissions
+- interpret non-trivial commands
+- inspect screen and browser state
+- choose the next tool call
+- verify outcomes
+- stop as soon as the goal is achieved
 
-This layer is the bridge to the operating system. It owns coordinate systems, accessibility calls, mouse movement, key events, scrolling, and screen capture.
+The planner should stay generic.
 
-## High-Level Flow
+It should not contain lots of:
 
-1. User speaks a command.
-2. The always-on transcription runtime captures audio and emits partial transcript updates.
-3. When the utterance is complete, the transcription runtime emits a final transcript event.
-4. The planner receives the final transcript plus recent task context.
-5. The planner calls perception tools to inspect the current screen.
-6. The planner plans one small next step.
-7. The executor executes the requested tool call.
-8. The system re-checks the screen if the action changed UI state.
-9. The loop repeats until success, failure, or escalation.
+- YouTube-specific flows
+- LinkedIn-specific flows
+- one-off scripted action chains
 
-## Design Principles
+Those make demos look good briefly but do not scale to a real computer-use agent.
 
-### Use small reversible steps
+### 3. Executor
 
-The agent should prefer:
+Responsibilities:
 
-- inspect
-- act
-- verify
+- run desktop and browser tools
+- return structured results
+- handle clicks, typing, scrolling, key presses, screenshots, and browser DOM actions
 
-over long blind action chains.
+This layer should be deterministic and fast.
 
-### Keep tools primitive
+## Browser Strategy
 
-The execution API should expose simple building blocks:
+There should be two browser paths:
 
-- screenshot
-- click
-- scroll
-- type
-- key press
-- wait
-- locate text or icon on screen
+### Local Browser Tools
 
-The reasoning agent composes these primitives into behaviors.
+Default path.
 
-### Prefer grounding over guesswork
+Use:
 
-Before clicking, the agent should usually know one of:
+- `open_app`
+- `browser_get_page`
+- `browser_query`
+- `browser_click_ref`
+- `browser_fill_ref`
+- `browser_scroll_to_text`
 
-- exact coordinates
-- a bounding box
-- a text match
-- an accessibility node
+This path should reuse the user’s existing Chrome app and tabs through normal macOS behavior and Chrome Apple Events.
 
-If confidence is low, it should re-capture the screen instead of guessing.
+### Browser-Use Backend
 
-### Optimize for latency in the common loop
+Optional path only.
 
-For YouTube browsing, the hot path should be:
+Use only when explicitly enabled or when running controlled experiments.
 
-- hear transcript
-- finalize utterance
-- inspect visible UI
-- take one action
-- verify result
+It should not be the default path for normal voice control because it can add:
 
-The system does not need deep multi-minute planning. It needs fast short-horizon control.
+- startup latency
+- separate browser automation state
+- a less natural user experience
 
-### Keep transcription separate from planning
+## Are We Currently Using Browser-Use?
 
-The always-on listener should not decide UI actions itself. It should only:
+Not by default.
 
-- listen
-- segment speech
-- produce transcript events
-- hand off finalized commands
+In the current code:
 
-This keeps the architecture clean:
+- `browser-use` is only considered when `BROWSER_USE_ENABLED=1`
+- with `BROWSER_USE_ENABLED=0`, the app should stay on the local browser/tool path
 
-- transcription runtime handles audio
-- planner handles reasoning
-- executor handles execution
+So if the loop is still slow with `BROWSER_USE_ENABLED=0`, that slowness is coming from the planner model and planner round-trip, not from `browser-use`.
 
-## Key Use Cases
+## Why The Current Loop Feels Slow
 
-### YouTube scrolling
+The main bottleneck is the planner round itself.
 
-Examples:
+A typical slow path looks like:
 
-- "Scroll down a bit"
-- "Scroll faster"
-- "Go back up"
-- "Keep scrolling until you see music videos"
+1. transcript arrives
+2. planner takes a screenshot
+3. planner sends a full LLM request
+4. LLM thinks for several seconds
+5. planner takes one action
+6. planner sends another full LLM request
 
-This requires:
+That is too expensive for voice control.
 
-- active window awareness
-- scroll direction and magnitude
-- optional repeated scrolling with stop conditions
+## Make The Loop Usable
 
-### YouTube search
+### 1. Add a real fast router
 
-Examples:
+Before the planner, route obvious commands directly.
 
-- "Search for antique restoration videos"
-- "Click the third result"
-- "Open Shorts"
+Good direct routes:
 
-This requires:
+- stop/cancel
+- open app
+- open URL
+- simple scroll
+- simple media keys
+- simple brightness and volume commands
 
-- text field targeting
-- click and type
-- submit actions
-- result disambiguation
+This removes many LLM calls entirely.
 
-### Media control
+### 2. Keep the planner generic
 
-Examples:
+Do not solve latency by hardcoding app-specific flows.
 
-- "Pause"
-- "Mute"
-- "Go fullscreen"
-- "Skip ahead ten seconds"
+Instead:
 
-This requires:
+- improve the browser tools
+- improve the planner prompt
+- lower planner latency
+- reduce the number of planner rounds
 
-- keyboard shortcuts when available
-- fallback click targeting on visible controls
+### 3. Use a fast planner profile first
 
-## Agent State
+Default planner behavior should be:
 
-The planner should keep a small working memory:
+- fast model
+- low token budget
+- small iteration budget
 
-- latest transcript
-- transcript id
-- current goal
-- last few tool calls
-- last screenshot reference
-- active app or tab if known
-- unresolved ambiguity
+Then only escalate to a stronger model if the fast attempt stalls.
 
-It should avoid long-term memory unless explicitly needed.
+### 4. Reduce planner rounds
 
-## Failure Modes
+The planner should aim for:
 
-Expected failure cases:
+- 0 LLM rounds for direct commands
+- 1 to 2 LLM rounds for common browser tasks
+- more only when genuinely necessary
 
-- screen changed before the click executed
-- target not visible
-- wrong window focused
-- YouTube layout differs from expectation
-- missing Accessibility or Screen Recording permissions
-- speech transcript is ambiguous
+### 5. Improve tool grounding
 
-Recovery strategy:
+The planner gets slow when the tools are weak.
 
-1. verify current screen
-2. attempt one fallback
-3. ask for clarification or surface failure
+The best way to speed it up is not just changing models, but giving it better primitives:
 
-## Suggested Agent Contract
+- reliable browser DOM querying
+- direct browser field fill
+- direct browser link click
+- browser page metadata
+- direct app open and URL open
+- propose-targets for desktop UI
 
-The planner should emit actions in a structured format like:
+Better tools mean fewer planner turns.
 
-```json
-{
-  "tool": "click",
-  "args": {
-    "x": 812,
-    "y": 214,
-    "button": "left"
-  },
-  "why": "Focus the YouTube search box",
-  "expected_outcome": "Text cursor appears in the search field"
-}
-```
+## Practical Latency Budget
 
-The transcription runtime should hand work to the planner in a structured format like:
+For a usable voice experience:
 
-```json
-{
-  "transcript_id": "tx_001",
-  "text": "scroll down a bit",
-  "is_final": true,
-  "started_at": "2026-03-21T12:00:00-07:00",
-  "ended_at": "2026-03-21T12:00:02-07:00",
-  "source": "microphone"
-}
-```
+- transcript finalization: under 1s after speech ends
+- direct command execution start: under 300ms
+- planner-based action start: ideally under 2s
+- browser-use path: opt-in only, because it may be much slower
 
-Execution responses should also be structured:
+If a path consistently starts acting after 5s or more, it should not be the default.
 
-```json
-{
-  "ok": true,
-  "tool": "click",
-  "result": {
-    "timestamp": "2026-03-21T12:00:00-07:00"
-  }
-}
-```
+## Recommended Loop
 
-## Scope Boundary
+1. user speaks
+2. transcription runtime emits final transcript
+3. command router classifies the request
+4. if direct primitive:
+   execute immediately
+5. otherwise:
+   run planner on current browser or desktop state
+6. executor performs tool call
+7. planner verifies result
+8. stop as soon as goal is satisfied
 
-In v1, this project should focus on:
+## What To Build Next
 
-- one-user local Mac control
-- one active display, with optional future multi-display support
-- YouTube browsing and playback flows
-- screen-driven control with optional accessibility enhancement
+Priority order:
 
-Out of scope for v1:
+1. generic direct-command router
+2. stronger browser primitives
+3. faster default planner profile
+4. deep fallback only when needed
+5. keep browser-use behind an explicit flag
 
-- remote control
-- multi-user coordination
-- full desktop autonomy
-- background task automation without user initiation
+This is the version of the architecture that is both:
 
-## Implementation Note
-
-Treat the planner as a reasoning layer over an explicit tool API and the executor as a deterministic Mac automation runtime. This separation keeps prompts stable, makes tool behavior testable, and allows the execution layer to be swapped later.
-
-For the hackathon build, assume the microphone listener is active for the full app session and forwards finalized utterances immediately.
-
-See [docs/transcription.md](/Users/jaypark/Documents/GitHub/produhacks-26/docs/transcription.md) for the speech pipeline, [docs/tool-api.md](/Users/jaypark/Documents/GitHub/produhacks-26/docs/tool-api.md) for the execution API, and [docs/examples.md](/Users/jaypark/Documents/GitHub/produhacks-26/docs/examples.md) for concrete task flows.
+- realistic for a general computer-use agent
+- fast enough to feel usable in a voice interface

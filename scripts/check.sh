@@ -3,7 +3,11 @@ set -euo pipefail
 
 source .venv/bin/activate
 python3 -m py_compile \
+  scripts/browser_compare.py \
+  scripts/browser_use_direct.py \
+  scripts/browser_use_server.py \
   src/main.py \
+  src/agent/browser_use_backend.py \
   src/agent/controller.py \
   src/agent/experiments.py \
   src/agent/loop.py \

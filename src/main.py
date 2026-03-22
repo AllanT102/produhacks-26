@@ -1,11 +1,13 @@
 """Application entry point placeholder."""
 
 import asyncio
+import itertools
 import os
 import queue
 import threading
 from typing import Any, Dict
 
+from src.agent.command_text import canonicalize_command_text
 from src.agent.controller import AgentController
 from src.agent.loop import run_agent_loop
 from src.shared.events import AgentCommand, TranscriptEvent, UIEvent
@@ -32,13 +34,14 @@ def clear_agent_queue(agent_queue: "asyncio.Queue[AgentCommand]") -> None:
 
 async def log_event(event: TranscriptEvent, event_queue: "queue.Queue[UIEvent]") -> None:
     """Print transcript events for local debugging and update the overlay."""
-    print("[{}] {}".format(event.type, event.text))
+    normalized_text = canonicalize_command_text(event.text)
+    print("[{}] {}".format(event.type, normalized_text))
     publish_ui_event(
         event_queue,
         "transcript",
         {
             "kind": event.type,
-            "text": event.text,
+            "text": normalized_text,
         },
     )
 
@@ -91,6 +94,58 @@ def main() -> None:
     shutdown_complete = threading.Event()
     shared: Dict[str, Any] = {}
     overlay_class = load_overlay()
+    fake_transcript = os.getenv("FAKE_TRANSCRIPT_TEXT", "").strip()
+    input_mode = os.getenv("DEV_INPUT_MODE", "").strip().lower()
+    wispr_mode = input_mode == "wispr"
+    type_mode = input_mode == "type"
+    if wispr_mode and overlay_class is None:
+        print("[ui] Wispr mode requires the overlay; falling back to terminal type mode")
+        wispr_mode = False
+        type_mode = True
+    text_input_mode = type_mode or wispr_mode
+    if text_input_mode and fake_transcript:
+        print("[main] ignoring FAKE_TRANSCRIPT_TEXT because interactive input mode is active")
+        fake_transcript = ""
+    active_mode = "wispr" if wispr_mode else ("type" if type_mode else ("mock" if fake_transcript else "microphone"))
+    print(f"[main] startup mode={active_mode}")
+    transcript_counter = itertools.count(1)
+
+    async def submit_command_text(text: str, transcript_id: str) -> None:
+        normalized = canonicalize_command_text(text)
+        if not normalized:
+            return
+        event = TranscriptEvent(
+            type="final",
+            transcript_id=transcript_id,
+            text=normalized,
+            timestamp=0.0,
+            source="wispr" if wispr_mode else ("typed" if text_input_mode else "microphone"),
+        )
+        await log_event(event, ui_queue)
+        await shared["agent_queue"].put(
+            AgentCommand(
+                transcript_id=event.transcript_id,
+                text=event.text,
+                metadata={
+                    "source": (
+                        "wispr"
+                        if wispr_mode
+                        else ("typed" if text_input_mode else "fake_transcript")
+                    )
+                },
+            )
+        )
+
+    def queue_overlay_text(text: str) -> None:
+        loop = shared.get("loop")
+        if loop is None:
+            return
+        transcript_id = ("wispr" if wispr_mode else "typed") + "_tx_{:06d}".format(next(transcript_counter))
+
+        async def submit() -> None:
+            await submit_command_text(text, transcript_id)
+
+        loop.call_soon_threadsafe(lambda: asyncio.create_task(submit()))
 
     def start_backend() -> None:
         async def backend_runner() -> None:
@@ -105,18 +160,14 @@ def main() -> None:
                 "agent_status",
                 {
                     "state": "listening",
-                    "detail": "Mic live",
+                    "detail": (
+                        "Wispr dictation ready"
+                        if wispr_mode
+                        else ("Type mode" if text_input_mode else ("Typed test mode" if fake_transcript else "Mic live"))
+                    ),
                 },
             )
 
-            service = TranscriptionService(
-                microphone=SoundDeviceMicrophone(),
-                backend=build_transcription_backend(),
-                segmenter=UtteranceSegmenter(SegmenterConfig()),
-                agent_queue=agent_queue,
-                on_event=lambda event: log_event(event, ui_queue),
-            )
-            shared["service"] = service
             loop_ready.set()
 
             consumer_task = asyncio.create_task(
@@ -126,10 +177,51 @@ def main() -> None:
                     on_status=lambda state, detail: handle_agent_status(state, detail, ui_queue),
                 )
             )
+
+            service = None
+            typed_task = None
+            if fake_transcript:
+                await submit_command_text(fake_transcript, "fake_tx_000001")
+            elif type_mode:
+                async def typed_loop() -> None:
+                    counter = 1
+                    while True:
+                        line = await asyncio.to_thread(input, "type> ")
+                        if not line:
+                            continue
+                        await submit_command_text(line, "typed_tx_{:06d}".format(counter))
+                        counter += 1
+
+                typed_task = asyncio.create_task(typed_loop())
+            elif wispr_mode:
+                print("[main] Wispr mode active; transcription service disabled")
+            else:
+                service = TranscriptionService(
+                    microphone=SoundDeviceMicrophone(),
+                    backend=build_transcription_backend(),
+                    segmenter=UtteranceSegmenter(SegmenterConfig()),
+                    agent_queue=agent_queue,
+                    on_event=lambda event: log_event(event, ui_queue),
+                )
+                shared["service"] = service
+
             try:
-                await service.start()
+                if service is not None:
+                    await service.start()
+                elif type_mode:
+                    await typed_task
+                elif wispr_mode:
+                    while True:
+                        await asyncio.sleep(0.2)
             finally:
-                service.stop()
+                if service is not None:
+                    service.stop()
+                if type_mode and typed_task is not None:
+                    typed_task.cancel()
+                    try:
+                        await typed_task
+                    except asyncio.CancelledError:
+                        pass
                 consumer_task.cancel()
                 try:
                     await consumer_task
@@ -198,7 +290,13 @@ def main() -> None:
                 loop.call_soon_threadsafe(service.stop)
         return
 
-    overlay = overlay_class(event_queue=ui_queue, on_stop=stop_llm, on_quit=quit_app)
+    overlay = overlay_class(
+        event_queue=ui_queue,
+        on_stop=stop_llm,
+        on_quit=quit_app,
+        on_submit_text=queue_overlay_text if wispr_mode else None,
+        input_mode="wispr" if wispr_mode else "",
+    )
     try:
         overlay.run()
     finally:

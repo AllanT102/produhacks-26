@@ -2,8 +2,9 @@
 
 import math
 import queue
+import time
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Optional
 
 from src.shared.events import UIEvent
 
@@ -33,12 +34,44 @@ except ImportError as exc:
 
 
 STATUS_STYLES = {
-    "listening": {"dot": (0.11, 0.63, 0.34), "label": "Listening", "chip": (0.90, 0.97, 0.93)},
-    "processing": {"dot": (0.93, 0.56, 0.09), "label": "Thinking", "chip": (0.99, 0.94, 0.88)},
-    "idle": {"dot": (0.22, 0.49, 0.91), "label": "Ready", "chip": (0.90, 0.94, 0.99)},
-    "stopped": {"dot": (0.86, 0.25, 0.25), "label": "Stopped", "chip": (0.99, 0.91, 0.91)},
-    "error": {"dot": (0.72, 0.19, 0.19), "label": "Error", "chip": (0.98, 0.90, 0.90)},
+    "listening": {
+        "dot": (0.46, 0.86, 0.73),
+        "line": (0.46, 0.86, 0.73),
+        "label": "Listening",
+        "chip": (0.24, 0.37, 0.33),
+        "chip_alpha": 0.62,
+    },
+    "processing": {
+        "dot": (0.57, 0.76, 0.99),
+        "line": (0.64, 0.78, 1.00),
+        "label": "Tinkering",
+        "chip": (0.24, 0.31, 0.40),
+        "chip_alpha": 0.68,
+    },
+    "idle": {
+        "dot": (0.56, 0.72, 0.96),
+        "line": (0.56, 0.72, 0.96),
+        "label": "Ready",
+        "chip": (0.24, 0.29, 0.37),
+        "chip_alpha": 0.58,
+    },
+    "stopped": {
+        "dot": (0.97, 0.63, 0.45),
+        "line": (0.97, 0.63, 0.45),
+        "label": "Stopped",
+        "chip": (0.38, 0.29, 0.26),
+        "chip_alpha": 0.7,
+    },
+    "error": {
+        "dot": (1.00, 0.44, 0.44),
+        "line": (1.00, 0.44, 0.44),
+        "label": "Error",
+        "chip": (0.41, 0.23, 0.23),
+        "chip_alpha": 0.76,
+    },
 }
+
+PROCESSING_GLYPHS = ["·", "✢", "✳", "✶", "✻", "✽"]
 
 
 @dataclass
@@ -68,6 +101,9 @@ class OverlayDelegate(NSObject):
         self.overlay.on_quit()
         NSApp().terminate_(None)
 
+    def submitClicked_(self, _sender) -> None:
+        self.overlay.submit_text()
+
     def windowWillClose_(self, _notification) -> None:
         NSApp().terminate_(None)
 
@@ -75,26 +111,40 @@ class OverlayDelegate(NSObject):
 class VoiceOverlay:
     """Small always-visible control surface for app state."""
 
+    _READY_SETTLE_SECONDS = 1.2
+    _TRANSCRIPT_FADE_SECONDS = 2.6
+
     def __init__(
         self,
         event_queue: "queue.Queue[UIEvent]",
         on_stop: Callable[[], None],
         on_quit: Callable[[], None],
+        on_submit_text: Optional[Callable[[str], None]] = None,
+        input_mode: str = "",
     ) -> None:
         self.event_queue = event_queue
         self.on_stop = on_stop
         self.on_quit = on_quit
+        self.on_submit_text = on_submit_text
+        self.input_mode = input_mode.strip().lower()
+        self.wispr_mode = self.input_mode == "wispr"
         self.state = OverlayState()
 
         self.app = NSApplication.sharedApplication()
         self.app.setActivationPolicy_(NSApplicationActivationPolicyRegular)
         self._pulse_tick = 0
+        self._last_activity_at = time.time()
+        self._compact_size = (156.0, 40.0)
+        self._expanded_size = (472.0, 134.0 if self.wispr_mode else 108.0)
+        self._expanded = False
+        self._processing_active = False
+        self._processing_glyph_index = 0
+        self._processing_glyph_direction = 1
 
-        width = 432.0
-        height = 88.0
+        width, height = self._compact_size
         frame = NSScreen.mainScreen().visibleFrame()
         x = frame.origin.x + ((frame.size.width - width) / 2.0)
-        y = frame.origin.y + frame.size.height - height - 26.0
+        y = frame.origin.y + frame.size.height - height - 22.0
 
         self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(x, y, width, height),
@@ -114,105 +164,183 @@ class VoiceOverlay:
 
         content = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, width, height))
         content.setWantsLayer_(True)
-        content.layer().setCornerRadius_(24.0)
+        content.layer().setCornerRadius_(20.0)
         content.layer().setBorderWidth_(1.0)
         content.layer().setBorderColor_(
-            NSColor.colorWithCalibratedRed_green_blue_alpha_(0.83, 0.83, 0.82, 0.82).CGColor()
+            NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.10).CGColor()
         )
         content.layer().setBackgroundColor_(
-            NSColor.colorWithCalibratedRed_green_blue_alpha_(0.97, 0.97, 0.96, 0.94).CGColor()
+            NSColor.colorWithCalibratedRed_green_blue_alpha_(0.11, 0.11, 0.13, 0.82).CGColor()
         )
         self.window.setContentView_(content)
         self.content = content
 
-        self.rainbow_segments = []
-        self._build_rainbow_border(width, height)
+        self.activity_glow = NSView.alloc().initWithFrame_(NSMakeRect(48, height - 8, 72, 3))
+        self.activity_glow.setWantsLayer_(True)
+        self.activity_glow.layer().setCornerRadius_(1.5)
+        self.activity_glow.setAlphaValue_(0.0)
+        content.addSubview_(self.activity_glow)
 
-        self.status_chip = NSView.alloc().initWithFrame_(NSMakeRect(18, 50, 108, 24))
+        self.status_chip = NSView.alloc().initWithFrame_(NSMakeRect(16, 8, 112, 24))
         self.status_chip.setWantsLayer_(True)
         self.status_chip.layer().setCornerRadius_(12.0)
+        self.status_chip.layer().setBorderWidth_(1.0)
+        self.status_chip.layer().setBorderColor_(
+            NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.06).CGColor()
+        )
         content.addSubview_(self.status_chip)
 
-        self.dot_halo = NSView.alloc().initWithFrame_(NSMakeRect(6, 4, 16, 16))
+        self.dot_halo = NSView.alloc().initWithFrame_(NSMakeRect(7, 4, 16, 16))
         self.dot_halo.setWantsLayer_(True)
         self.dot_halo.layer().setCornerRadius_(8.0)
         self.dot_halo.setAlphaValue_(0.0)
         self.status_chip.addSubview_(self.dot_halo)
 
-        self.dot = NSView.alloc().initWithFrame_(NSMakeRect(10, 8, 8, 8))
+        self.dot = NSView.alloc().initWithFrame_(NSMakeRect(11, 8, 8, 8))
         self.dot.setWantsLayer_(True)
         self.dot.layer().setCornerRadius_(4.0)
         self.status_chip.addSubview_(self.dot)
 
-        self.status_label = NSTextField.alloc().initWithFrame_(NSMakeRect(24, 2, 72, 18))
+        self.status_label = NSTextField.alloc().initWithFrame_(NSMakeRect(28, 2, 76, 18))
         self.status_label.setBezeled_(False)
         self.status_label.setDrawsBackground_(False)
         self.status_label.setEditable_(False)
         self.status_label.setSelectable_(False)
-        self.status_label.setFont_(NSFont.systemFontOfSize_(11))
-        self.status_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(0.12, 1.0))
+        self.status_label.setFont_(NSFont.boldSystemFontOfSize_(11))
+        self.status_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(0.96, 1.0))
         self.status_chip.addSubview_(self.status_label)
 
-        self.stop_button = NSButton.alloc().initWithFrame_(NSMakeRect(318, 48, 56, 28))
+        self.stop_button = NSButton.alloc().initWithFrame_(NSMakeRect(346, 66, 70, 28))
         self.stop_button.setTitle_("Stop")
         self.stop_button.setTarget_(self.delegate)
         self.stop_button.setAction_("stopClicked:")
         self.stop_button.setBordered_(False)
         self.stop_button.setWantsLayer_(True)
         self.stop_button.layer().setCornerRadius_(14.0)
+        self.stop_button.layer().setBorderWidth_(1.0)
+        self.stop_button.layer().setBorderColor_(
+            NSColor.colorWithCalibratedRed_green_blue_alpha_(0.86, 0.47, 0.43, 0.20).CGColor()
+        )
         self.stop_button.layer().setBackgroundColor_(
-            NSColor.colorWithCalibratedRed_green_blue_alpha_(0.95, 0.91, 0.90, 1.0).CGColor()
+            NSColor.colorWithCalibratedRed_green_blue_alpha_(0.55, 0.18, 0.15, 0.18).CGColor()
         )
         self.stop_button.setFont_(NSFont.boldSystemFontOfSize_(12))
         self.stop_button.setContentTintColor_(
-            NSColor.colorWithCalibratedRed_green_blue_alpha_(0.61, 0.18, 0.16, 1.0)
+            NSColor.colorWithCalibratedWhite_alpha_(0.98, 0.95)
         )
         content.addSubview_(self.stop_button)
 
-        self.quit_button = NSButton.alloc().initWithFrame_(NSMakeRect(380, 48, 32, 28))
+        self.quit_button = NSButton.alloc().initWithFrame_(NSMakeRect(424, 66, 28, 28))
         self.quit_button.setTitle_("x")
         self.quit_button.setTarget_(self.delegate)
         self.quit_button.setAction_("quitClicked:")
         self.quit_button.setBordered_(False)
         self.quit_button.setWantsLayer_(True)
         self.quit_button.layer().setCornerRadius_(14.0)
+        self.quit_button.layer().setBorderWidth_(1.0)
+        self.quit_button.layer().setBorderColor_(
+            NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.06).CGColor()
+        )
         self.quit_button.layer().setBackgroundColor_(
-            NSColor.colorWithCalibratedRed_green_blue_alpha_(0.92, 0.92, 0.91, 1.0).CGColor()
+            NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.06).CGColor()
         )
         self.quit_button.setFont_(NSFont.boldSystemFontOfSize_(14))
         self.quit_button.setContentTintColor_(
-            NSColor.colorWithCalibratedRed_green_blue_alpha_(0.35, 0.35, 0.35, 1.0)
+            NSColor.colorWithCalibratedWhite_alpha_(0.82, 1.0)
         )
         content.addSubview_(self.quit_button)
 
-        self.transcript_label = NSTextField.alloc().initWithFrame_(NSMakeRect(18, 22, 340, 24))
+        self.transcript_label = NSTextField.alloc().initWithFrame_(NSMakeRect(22, 24, 404, 24))
         self.transcript_label.setBezeled_(False)
         self.transcript_label.setDrawsBackground_(False)
         self.transcript_label.setEditable_(False)
         self.transcript_label.setSelectable_(False)
-        self.transcript_label.setFont_(NSFont.systemFontOfSize_(15))
-        self.transcript_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(0.07, 1.0))
+        self.transcript_label.setFont_(NSFont.systemFontOfSize_(17))
+        self.transcript_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(0.97, 1.0))
         self.transcript_label.setLineBreakMode_(4)
         content.addSubview_(self.transcript_label)
 
-        self.placeholder_label = NSTextField.alloc().initWithFrame_(NSMakeRect(18, 22, 250, 20))
+        self.placeholder_label = NSTextField.alloc().initWithFrame_(NSMakeRect(22, 24, 260, 22))
         self.placeholder_label.setBezeled_(False)
         self.placeholder_label.setDrawsBackground_(False)
         self.placeholder_label.setEditable_(False)
         self.placeholder_label.setSelectable_(False)
-        self.placeholder_label.setFont_(NSFont.systemFontOfSize_(15))
-        self.placeholder_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(0.55, 1.0))
+        self.placeholder_label.setFont_(NSFont.systemFontOfSize_(17))
+        self.placeholder_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(0.42, 1.0))
         self.placeholder_label.setStringValue_("Say a command")
         content.addSubview_(self.placeholder_label)
 
-        self.detail_label = NSTextField.alloc().initWithFrame_(NSMakeRect(140, 54, 180, 16))
+        self.detail_label = NSTextField.alloc().initWithFrame_(NSMakeRect(146, 70, 188, 16))
         self.detail_label.setBezeled_(False)
         self.detail_label.setDrawsBackground_(False)
         self.detail_label.setEditable_(False)
         self.detail_label.setSelectable_(False)
-        self.detail_label.setFont_(NSFont.systemFontOfSize_(11))
-        self.detail_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(0.42, 1.0))
+        self.detail_label.setFont_(self._monospaced_font(11, bold=False))
+        self.detail_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(0.56, 1.0))
         content.addSubview_(self.detail_label)
+
+        self.detail_symbol_label = NSTextField.alloc().initWithFrame_(NSMakeRect(146, 69, 16, 16))
+        self.detail_symbol_label.setBezeled_(False)
+        self.detail_symbol_label.setDrawsBackground_(False)
+        self.detail_symbol_label.setEditable_(False)
+        self.detail_symbol_label.setSelectable_(False)
+        self.detail_symbol_label.setFont_(self._monospaced_font(13, bold=True))
+        self.detail_symbol_label.setTextColor_(NSColor.colorWithCalibratedRed_green_blue_alpha_(0.88, 0.68, 0.53, 1.0))
+        self.detail_symbol_label.setHidden_(True)
+        content.addSubview_(self.detail_symbol_label)
+
+        self.command_input = None
+        self.submit_button = None
+        self.input_hint_label = None
+        if self.wispr_mode:
+            self.command_input = NSTextField.alloc().initWithFrame_(NSMakeRect(22, 18, 346, 30))
+            self.command_input.setBezeled_(False)
+            self.command_input.setDrawsBackground_(False)
+            self.command_input.setEditable_(True)
+            self.command_input.setSelectable_(True)
+            self.command_input.setFont_(NSFont.systemFontOfSize_(16))
+            self.command_input.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(0.97, 1.0))
+            self.command_input.setTarget_(self.delegate)
+            self.command_input.setAction_("submitClicked:")
+            self.command_input.setFocusRingType_(0)
+            self.command_input.setWantsLayer_(True)
+            self.command_input.layer().setCornerRadius_(14.0)
+            self.command_input.layer().setBorderWidth_(1.0)
+            self.command_input.layer().setBorderColor_(
+                NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.08).CGColor()
+            )
+            self.command_input.layer().setBackgroundColor_(
+                NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.06).CGColor()
+            )
+            content.addSubview_(self.command_input)
+
+            self.submit_button = NSButton.alloc().initWithFrame_(NSMakeRect(376, 18, 76, 30))
+            self.submit_button.setTitle_("Send")
+            self.submit_button.setTarget_(self.delegate)
+            self.submit_button.setAction_("submitClicked:")
+            self.submit_button.setBordered_(False)
+            self.submit_button.setWantsLayer_(True)
+            self.submit_button.layer().setCornerRadius_(15.0)
+            self.submit_button.layer().setBorderWidth_(1.0)
+            self.submit_button.layer().setBorderColor_(
+                NSColor.colorWithCalibratedRed_green_blue_alpha_(0.42, 0.61, 0.88, 0.22).CGColor()
+            )
+            self.submit_button.layer().setBackgroundColor_(
+                NSColor.colorWithCalibratedRed_green_blue_alpha_(0.25, 0.41, 0.63, 0.22).CGColor()
+            )
+            self.submit_button.setFont_(NSFont.boldSystemFontOfSize_(12))
+            self.submit_button.setContentTintColor_(NSColor.colorWithCalibratedWhite_alpha_(0.98, 1.0))
+            content.addSubview_(self.submit_button)
+
+            self.input_hint_label = NSTextField.alloc().initWithFrame_(NSMakeRect(26, 24, 260, 18))
+            self.input_hint_label.setBezeled_(False)
+            self.input_hint_label.setDrawsBackground_(False)
+            self.input_hint_label.setEditable_(False)
+            self.input_hint_label.setSelectable_(False)
+            self.input_hint_label.setFont_(NSFont.systemFontOfSize_(14))
+            self.input_hint_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(0.36, 1.0))
+            self.input_hint_label.setStringValue_("Click here, then dictate with Wispr")
+            content.addSubview_(self.input_hint_label)
 
         self.refresh_ui()
         self.timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
@@ -227,6 +355,8 @@ class VoiceOverlay:
         """Start the overlay event loop."""
         self.window.makeKeyAndOrderFront_(None)
         NSRunningApplication.currentApplication().activateWithOptions_(1)
+        if self.wispr_mode and self.command_input is not None:
+            self.window.makeFirstResponder_(self.command_input)
         self.app.run()
 
     def close(self) -> None:
@@ -244,6 +374,7 @@ class VoiceOverlay:
             except queue.Empty:
                 break
             self.handle_event(event)
+        self._maybe_compact()
         self._update_animation()
 
     def handle_event(self, event: UIEvent) -> None:
@@ -259,8 +390,9 @@ class VoiceOverlay:
                 self.state.detail = "Command captured"
         elif event.type == "agent_status":
             self.state.status = event.payload.get("state", self.state.status)
-            self.state.detail = event.payload.get("detail", self.state.detail)
+            self.state.detail = event.payload.get("step") or event.payload.get("detail", self.state.detail)
 
+        self._last_activity_at = time.time()
         self.refresh_ui()
 
     def refresh_ui(self) -> None:
@@ -269,7 +401,12 @@ class VoiceOverlay:
         red, green, blue = style["dot"]
         chip_red, chip_green, chip_blue = style["chip"]
         self.status_chip.layer().setBackgroundColor_(
-            NSColor.colorWithCalibratedRed_green_blue_alpha_(chip_red, chip_green, chip_blue, 1.0).CGColor()
+            NSColor.colorWithCalibratedRed_green_blue_alpha_(
+                chip_red,
+                chip_green,
+                chip_blue,
+                style.get("chip_alpha", 0.6),
+            ).CGColor()
         )
         self.dot.layer().setBackgroundColor_(
             NSColor.colorWithCalibratedRed_green_blue_alpha_(red, green, blue, 1.0).CGColor()
@@ -281,57 +418,219 @@ class VoiceOverlay:
         self.transcript_label.setStringValue_(self.state.transcript)
         self.placeholder_label.setHidden_(bool(self.state.transcript))
         self.transcript_label.setHidden_(not bool(self.state.transcript))
-        self.detail_label.setStringValue_(self.state.detail)
+        self._apply_detail_copy()
+        self._apply_layout()
         self._update_animation()
-
-    def _build_rainbow_border(self, width: float, height: float) -> None:
-        """Create small layer-backed border segments for the processing rainbow effect."""
-        thickness = 4.0
-        inset = 8.0
-        segment_specs = [
-            (inset + 18, height - thickness - 2, 54, thickness),
-            (inset + 76, height - thickness - 2, 54, thickness),
-            (inset + 134, height - thickness - 2, 54, thickness),
-            (inset + 192, height - thickness - 2, 54, thickness),
-            (inset + 250, height - thickness - 2, 54, thickness),
-            (inset + 308, height - thickness - 2, 54, thickness),
-            (width - inset - thickness - 2, 16, thickness, 18),
-            (width - inset - thickness - 2, 38, thickness, 18),
-            (width - inset - thickness - 2, 60, thickness, 18),
-            (inset + 308, 2, 54, thickness),
-            (inset + 250, 2, 54, thickness),
-            (inset + 192, 2, 54, thickness),
-            (inset + 134, 2, 54, thickness),
-            (inset + 76, 2, 54, thickness),
-            (inset + 18, 2, 54, thickness),
-            (2, 16, thickness, 18),
-            (2, 38, thickness, 18),
-            (2, 60, thickness, 18),
-        ]
-
-        for x, y, segment_width, segment_height in segment_specs:
-            segment = NSView.alloc().initWithFrame_(NSMakeRect(x, y, segment_width, segment_height))
-            segment.setWantsLayer_(True)
-            segment.layer().setCornerRadius_(min(segment_width, segment_height) / 2.0)
-            segment.setAlphaValue_(0.0)
-            self.content.addSubview_(segment)
-            self.rainbow_segments.append(segment)
+        self._refresh_input_affordance()
 
     def _update_animation(self) -> None:
-        """Pulse the status indicator while the agent is active."""
+        """Animate a restrained activity line and status halo."""
+        style = STATUS_STYLES.get(self.state.status, STATUS_STYLES["idle"])
+        line_red, line_green, line_blue = style["line"]
+        content_width = self.content.frame().size.width
+        content_height = self.content.frame().size.height
         if self.state.status == "processing":
+            self._advance_processing_status()
             phase = (math.sin(self._pulse_tick / 2.4) + 1.0) / 2.0
-            scale = 14.0 + (phase * 6.0)
+            scale = 14.0 + (phase * 4.0)
             origin = 8.0 - ((scale - 16.0) / 2.0)
             self.dot_halo.setFrame_(NSMakeRect(origin, origin, scale, scale))
             self.dot_halo.layer().setCornerRadius_(scale / 2.0)
-            self.dot_halo.setAlphaValue_(0.28 + (phase * 0.22))
-            for index, segment in enumerate(self.rainbow_segments):
-                hue = ((self._pulse_tick / 42.0) + (index / max(1, len(self.rainbow_segments)))) % 1.0
-                color = NSColor.colorWithCalibratedHue_saturation_brightness_alpha_(hue, 0.84, 0.98, 0.92)
-                segment.layer().setBackgroundColor_(color.CGColor())
-                segment.setAlphaValue_(0.88)
+            self.dot_halo.setAlphaValue_(0.24 + (phase * 0.16))
+            width = 88.0 + (phase * 40.0)
+            sweep = ((self._pulse_tick % 120) / 120.0)
+            x = 22.0 + (sweep * max(1.0, content_width - 44.0 - width))
+            self.activity_glow.setFrame_(NSMakeRect(x, content_height - 8.0, width, 3.0))
+            self.activity_glow.layer().setCornerRadius_(1.5)
+            self.activity_glow.layer().setBackgroundColor_(
+                NSColor.colorWithCalibratedRed_green_blue_alpha_(
+                    line_red,
+                    line_green,
+                    line_blue,
+                    0.88,
+                ).CGColor()
+            )
+            self.activity_glow.setAlphaValue_(0.52 + (phase * 0.18))
         else:
+            self._processing_active = False
             self.dot_halo.setAlphaValue_(0.0)
-            for segment in self.rainbow_segments:
-                segment.setAlphaValue_(0.0)
+            if self._expanded:
+                width = 74.0
+                self.activity_glow.setFrame_(
+                    NSMakeRect((content_width - width) / 2.0, content_height - 8.0, width, 3.0)
+                )
+                self.activity_glow.layer().setCornerRadius_(1.5)
+                self.activity_glow.layer().setBackgroundColor_(
+                    NSColor.colorWithCalibratedRed_green_blue_alpha_(
+                        line_red,
+                        line_green,
+                        line_blue,
+                        0.45,
+                    ).CGColor()
+                )
+                self.activity_glow.setAlphaValue_(0.16)
+            else:
+                self.activity_glow.setAlphaValue_(0.0)
+
+    def _is_expanded_state(self) -> bool:
+        """Return whether the overlay should be expanded."""
+        return self.state.status in ("processing", "stopped", "error") or bool(self.state.transcript)
+
+    def _maybe_compact(self) -> None:
+        """Collapse the overlay after a brief quiet period."""
+        if self.state.status in ("processing", "stopped", "error"):
+            return
+        quiet_for = time.time() - self._last_activity_at
+        if self.state.status == "idle" and quiet_for > self._READY_SETTLE_SECONDS:
+            self.state.status = "listening"
+            self.state.detail = "Mic live"
+            self.refresh_ui()
+            return
+        if self.state.transcript and quiet_for > self._TRANSCRIPT_FADE_SECONDS:
+            self.state.transcript = ""
+            if self.state.status == "idle":
+                self.state.status = "listening"
+            self.state.detail = "Mic live"
+            self.refresh_ui()
+
+    def _apply_layout(self) -> None:
+        """Switch between subtle idle pill and expanded action card."""
+        expanded = self._is_expanded_state()
+        if expanded != self._expanded:
+            self._expanded = expanded
+            width, height = self._expanded_size if expanded else self._compact_size
+            self._resize_window(width, height, expanded)
+
+        if expanded:
+            if self.wispr_mode:
+                self._apply_wispr_expanded_layout()
+            else:
+                self._apply_standard_expanded_layout()
+        else:
+            self.status_chip.setFrame_(NSMakeRect(20, 8, 112, 24))
+            self.stop_button.setHidden_(True)
+            self.quit_button.setHidden_(True)
+            self.detail_label.setHidden_(True)
+            self.detail_symbol_label.setHidden_(True)
+            self.placeholder_label.setHidden_(True)
+            self.transcript_label.setHidden_(True)
+        if self.command_input is not None:
+            self.command_input.setHidden_(not expanded)
+        if self.submit_button is not None:
+            self.submit_button.setHidden_(not expanded)
+        if self.input_hint_label is not None:
+            self.input_hint_label.setHidden_(not expanded)
+
+    def _resize_window(self, width: float, height: float, expanded: bool) -> None:
+        """Resize and reposition the floating overlay."""
+        frame = NSScreen.mainScreen().visibleFrame()
+        x = frame.origin.x + ((frame.size.width - width) / 2.0)
+        y = frame.origin.y + frame.size.height - height - (26.0 if expanded else 22.0)
+        self.window.setFrame_display_animate_(NSMakeRect(x, y, width, height), True, True)
+        self.content.setFrame_(NSMakeRect(0, 0, width, height))
+
+    def _apply_standard_expanded_layout(self) -> None:
+        """Lay out the passive voice HUD when expanded."""
+        self.status_chip.setFrame_(NSMakeRect(18, 66, 114, 24))
+        self.detail_symbol_label.setFrame_(NSMakeRect(146, 69, 16, 16))
+        self.detail_label.setFrame_(NSMakeRect(146, 70, 188, 16))
+        self.transcript_label.setFrame_(NSMakeRect(22, 24, 404, 24))
+        self.transcript_label.setFont_(NSFont.systemFontOfSize_(17))
+        self.placeholder_label.setFrame_(NSMakeRect(22, 24, 260, 22))
+        self.stop_button.setFrame_(NSMakeRect(346, 66, 70, 28))
+        self.quit_button.setFrame_(NSMakeRect(424, 66, 28, 28))
+        self.stop_button.setHidden_(self.state.status != "processing")
+        self.quit_button.setHidden_(False)
+        self.detail_label.setHidden_(False)
+        self.placeholder_label.setHidden_(bool(self.state.transcript))
+
+    def _apply_wispr_expanded_layout(self) -> None:
+        """Lay out the dev input surface without overlapping controls and transcript."""
+        self.status_chip.setFrame_(NSMakeRect(18, 88, 122, 24))
+        self.stop_button.setFrame_(NSMakeRect(348, 84, 72, 30))
+        self.quit_button.setFrame_(NSMakeRect(428, 84, 28, 30))
+        self.stop_button.setHidden_(self.state.status != "processing")
+        self.quit_button.setHidden_(False)
+
+        self.transcript_label.setFrame_(NSMakeRect(24, 56, 424, 20))
+        self.transcript_label.setFont_(NSFont.systemFontOfSize_(15))
+        self.placeholder_label.setFrame_(NSMakeRect(24, 56, 220, 18))
+        self.placeholder_label.setHidden_(bool(self.state.transcript))
+
+        if self.state.status == "processing":
+            self.detail_symbol_label.setHidden_(True)
+            self.detail_label.setHidden_(True)
+        else:
+            self.detail_symbol_label.setHidden_(True)
+            self.detail_label.setHidden_(False)
+            self.detail_label.setFrame_(NSMakeRect(154, 92, 170, 14))
+
+        if self.command_input is not None:
+            self.command_input.setFrame_(NSMakeRect(22, 16, 344, 30))
+        if self.submit_button is not None:
+            self.submit_button.setFrame_(NSMakeRect(376, 16, 74, 30))
+        if self.input_hint_label is not None:
+            self.input_hint_label.setFrame_(NSMakeRect(32, 22, 228, 16))
+
+    def submit_text(self) -> None:
+        """Submit the current Wispr input field contents."""
+        if self.command_input is None or self.on_submit_text is None:
+            return
+        text = str(self.command_input.stringValue() or "").strip()
+        if not text:
+            return
+        self.on_submit_text(text)
+        self.command_input.setStringValue_("")
+        self._last_activity_at = time.time()
+        self.refresh_ui()
+        self.window.makeFirstResponder_(self.command_input)
+
+    def _apply_detail_copy(self) -> None:
+        """Render the compact status copy or the Claude-like processing phrase."""
+        if self.state.status == "processing":
+            self.detail_symbol_label.setHidden_(False)
+            self.detail_symbol_label.setStringValue_(PROCESSING_GLYPHS[self._processing_glyph_index])
+            self.detail_label.setStringValue_("Tinkering…")
+            self.detail_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(0.70, 1.0))
+            self.detail_label.setFrame_(NSMakeRect(164, 70, 120, 16))
+            return
+
+        self.detail_symbol_label.setHidden_(True)
+        self.detail_label.setStringValue_(self.state.detail)
+        self.detail_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(0.56, 1.0))
+        self.detail_label.setFrame_(NSMakeRect(146, 70, 188, 16))
+
+    def _advance_processing_status(self) -> None:
+        """Cycle the Claude-like glyph spinner and slower verb changes."""
+        if not self._processing_active:
+            self._processing_active = True
+            self._processing_glyph_index = 0
+            self._processing_glyph_direction = 1
+
+        if self._pulse_tick % 3 == 0:
+            next_index = self._processing_glyph_index + self._processing_glyph_direction
+            if next_index >= len(PROCESSING_GLYPHS) - 1 or next_index <= 0:
+                self._processing_glyph_direction *= -1
+                next_index = self._processing_glyph_index + self._processing_glyph_direction
+            self._processing_glyph_index = max(0, min(len(PROCESSING_GLYPHS) - 1, next_index))
+
+        self._apply_detail_copy()
+
+    def _refresh_input_affordance(self) -> None:
+        """Keep the Wispr input field focused and show placeholder hint naturally."""
+        if not self.wispr_mode or self.command_input is None or self.input_hint_label is None:
+            return
+        has_text = bool(str(self.command_input.stringValue() or "").strip())
+        self.input_hint_label.setHidden_(has_text or self.state.status == "processing")
+        if self.state.status != "processing":
+            self.window.makeFirstResponder_(self.command_input)
+
+    @staticmethod
+    def _monospaced_font(size: float, bold: bool) -> object:
+        """Return a monospaced system font when available."""
+        weight = 0.4 if bold else 0.0
+        if hasattr(NSFont, "monospacedSystemFontOfSize_weight_"):
+            return NSFont.monospacedSystemFontOfSize_weight_(size, weight)
+        if bold:
+            return NSFont.boldSystemFontOfSize_(size)
+        return NSFont.systemFontOfSize_(size)

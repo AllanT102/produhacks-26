@@ -1,19 +1,34 @@
 """Agent loop: consumes finalized transcripts and runs the agentic planner."""
 
 import asyncio
+import time
 from typing import Awaitable, Callable, Optional
 
 from src.agent.controller import AgentController
 from src.agent.planner import execute_command
+from src.agent.router import route_direct_command
 from src.shared.events import AgentCommand
+from src.tool_runtime.runtime import execute_tool
 
 StatusCallback = Callable[[str, str], Awaitable[None]]
+_MIN_PROCESSING_VISIBLE_SECONDS = 0.55
 
 
 async def _emit_status(callback: Optional[StatusCallback], state: str, detail: str) -> None:
     """Send agent status updates to interested observers."""
     if callback is not None:
         await callback(state, detail)
+
+
+async def _emit_ready_when_visible(
+    callback: Optional[StatusCallback],
+    started_at: float,
+) -> None:
+    """Keep the processing state on screen long enough to be perceptible."""
+    remaining = _MIN_PROCESSING_VISIBLE_SECONDS - (time.perf_counter() - started_at)
+    if remaining > 0:
+        await asyncio.sleep(remaining)
+    await _emit_status(callback, "idle", "Ready")
 
 
 async def run_agent_loop(
@@ -32,11 +47,26 @@ async def run_agent_loop(
             controller.reset()
             await _emit_status(on_status, "processing", command.text)
             print(f"[agent] received transcript_id={command.transcript_id} text={command.text!r}")
+            started_at = time.perf_counter()
+            direct_route = route_direct_command(command)
+            if direct_route is not None:
+                print("[router] direct route selected")
+                for call in direct_route.tool_calls:
+                    result = await asyncio.to_thread(execute_tool, call)
+                    if not result.ok:
+                        raise RuntimeError(result.error.get("message", "direct route failed"))
+                summary = direct_route.summary
+                print("[timing] command total took {:.1f}ms".format((time.perf_counter() - started_at) * 1000.0))
+                print(f"[agent] result={summary}")
+                await _emit_ready_when_visible(on_status, started_at)
+                continue
+
             task = asyncio.create_task(execute_command(command))
             controller.set_current_task(task)
             summary = await task
+            print("[timing] command total took {:.1f}ms".format((time.perf_counter() - started_at) * 1000.0))
             print(f"[agent] result={summary}")
-            await _emit_status(on_status, "idle", "Ready")
+            await _emit_ready_when_visible(on_status, started_at)
         except asyncio.CancelledError:
             print("[agent] stopped")
             await _emit_status(on_status, "stopped", "Stopped")

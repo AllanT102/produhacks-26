@@ -3,17 +3,24 @@
 import asyncio
 import json
 import os
+import time
+from dataclasses import dataclass
 from typing import Callable, Optional
 from urllib.parse import unquote, urlparse
 
 import anthropic
 
 from src.shared.events import AgentCommand, ToolCall, ToolResult
+from src.shared.timing import elapsed_ms
 from src.tool_runtime.runtime import execute_tool
 from src.tool_runtime.schemas import TOOLS
 
-_MODEL = "claude-opus-4-6"
-_MAX_ITERATIONS = 12
+_FAST_MODEL = os.getenv("ANTHROPIC_FAST_MODEL", os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"))
+_DEEP_MODEL = os.getenv("ANTHROPIC_DEEP_MODEL", "claude-opus-4-20250514")
+_FAST_MAX_TOKENS = int(os.getenv("ANTHROPIC_FAST_MAX_TOKENS", "700"))
+_DEEP_MAX_TOKENS = int(os.getenv("ANTHROPIC_DEEP_MAX_TOKENS", "1200"))
+_FAST_MAX_ITERATIONS = int(os.getenv("ANTHROPIC_FAST_MAX_ITERATIONS", "5"))
+_DEEP_MAX_ITERATIONS = int(os.getenv("ANTHROPIC_DEEP_MAX_ITERATIONS", "10"))
 _MAX_CONSECUTIVE_NON_ACTION_ROUNDS = 2
 
 _ACTION_TOOLS = {
@@ -45,6 +52,129 @@ _PROGRESS_TOOLS = {
 }
 
 ToolExecutor = Callable[[ToolCall], ToolResult]
+
+_FAST_MODEL_FALLBACKS = (
+    _FAST_MODEL,
+    "claude-sonnet-4-20250514",
+    "claude-3-7-sonnet-20250219",
+)
+
+_DEEP_MODEL_FALLBACKS = (
+    _DEEP_MODEL,
+    "claude-opus-4-20250514",
+    "claude-sonnet-4-20250514",
+)
+
+
+@dataclass(frozen=True)
+class PlannerProfile:
+    name: str
+    model: str
+    max_tokens: int
+    max_iterations: int
+
+
+def _load_browser_use_backend():
+    """Import browser-use lazily so normal startup stays fast."""
+    from src.agent.browser_use_backend import execute_command_with_browser_use, should_use_browser_use
+
+    return execute_command_with_browser_use, should_use_browser_use
+
+
+def _select_planner_profile(command_text: str) -> PlannerProfile:
+    """Choose a latency-oriented planner profile from the command shape."""
+    text = command_text.strip().lower()
+    word_count = len(text.split())
+    complexity_hints = (
+        "then ",
+        "after ",
+        "before ",
+        "if ",
+        "until ",
+        "while ",
+        "compare ",
+        "summarize ",
+        "multiple ",
+        "several ",
+    )
+    is_complex = word_count > 18 or any(hint in text for hint in complexity_hints)
+    if is_complex:
+        return PlannerProfile(
+            name="deep",
+            model=_DEEP_MODEL,
+            max_tokens=_DEEP_MAX_TOKENS,
+            max_iterations=_DEEP_MAX_ITERATIONS,
+        )
+    return PlannerProfile(
+        name="fast",
+        model=_FAST_MODEL,
+        max_tokens=_FAST_MAX_TOKENS,
+        max_iterations=_FAST_MAX_ITERATIONS,
+    )
+
+
+def _fallback_models_for(profile_name: str, primary: str) -> tuple[str, ...]:
+    """Return an ordered model fallback list for a planner profile."""
+    if profile_name.startswith("deep"):
+        ordered = list(_DEEP_MODEL_FALLBACKS)
+    else:
+        ordered = list(_FAST_MODEL_FALLBACKS)
+    if primary not in ordered:
+        ordered.insert(0, primary)
+    seen = []
+    for item in ordered:
+        if item and item not in seen:
+            seen.append(item)
+    return tuple(seen)
+
+
+async def _create_message_with_fallbacks(
+    client: anthropic.Anthropic,
+    profile_name: str,
+    model: str,
+    max_tokens: int,
+    system: str,
+    messages: list[dict],
+):
+    """Call Anthropic Messages API, retrying on unknown model IDs."""
+    last_error = None
+    for candidate in _fallback_models_for(profile_name, model):
+        started_at = time.perf_counter()
+        try:
+            response = await asyncio.to_thread(
+                client.messages.create,
+                model=candidate,
+                max_tokens=max_tokens,
+                system=system,
+                tools=TOOLS,
+                messages=messages,
+            )
+            if candidate != model:
+                print(f"[planner] switched model from {model} to available fallback {candidate}")
+            print("[timing] anthropic round took {:.1f}ms".format((time.perf_counter() - started_at) * 1000.0))
+            return response, candidate
+        except Exception as exc:
+            last_error = exc
+            if "not_found_error" in str(exc) or "model:" in str(exc):
+                print(f"[planner] model unavailable: {candidate}")
+                continue
+            raise
+    raise last_error
+
+
+def _should_retry_with_deep_profile(summary: str, profile: PlannerProfile) -> bool:
+    """Decide whether a fast planner miss should be retried with a stronger profile."""
+    if profile.name != "fast":
+        return False
+    normalized = summary.strip().lower()
+    return normalized.startswith("stopped") or normalized.startswith("reached ")
+
+async def _run_tool(tool_executor: ToolExecutor, name: str, args: dict) -> ToolResult:
+    """Run a tool and print timing."""
+    started_at = time.perf_counter()
+    result = await asyncio.to_thread(tool_executor, ToolCall(tool=name, args=args))
+    print("[timing] tool {} took {:.1f}ms".format(name, (time.perf_counter() - started_at) * 1000.0))
+    return result
 
 
 def _make_client() -> anthropic.Anthropic:
@@ -243,24 +373,78 @@ def _settle_delay_for_actions(action_calls: list[tuple[str, dict]], browser_acti
     return delay
 
 
-async def execute_command(command: AgentCommand, max_iterations: int = _MAX_ITERATIONS) -> str:
+async def execute_command(command: AgentCommand) -> str:
     """Run the agentic loop for a single voice command with real desktop tools."""
-    return await execute_command_with_tools(command, execute_tool, max_iterations=max_iterations)
+    started_at = time.perf_counter()
+    if os.getenv("BROWSER_USE_ENABLED", "1").strip().lower() in {"1", "true", "yes"}:
+        execute_command_with_browser_use, should_use_browser_use = _load_browser_use_backend()
+        if should_use_browser_use(command):
+            print(f"[planner] routing to browser-use backend for goal={command.text!r}")
+            try:
+                result = await execute_command_with_browser_use(command)
+                print("[timing] planner browser-use path took {:.1f}ms".format(elapsed_ms(started_at)))
+                return result
+            except Exception as exc:
+                if not os.environ.get("ANTHROPIC_API_KEY"):
+                    return f"Browser action failed before fallback: {exc}"
+                print(f"[planner] browser-use failed, falling back to local planner: {exc}")
+    profile = _select_planner_profile(command.text)
+    print(
+        "[planner] selected profile={} model={} max_tokens={} max_iterations={}".format(
+            profile.name, profile.model, profile.max_tokens, profile.max_iterations
+        )
+    )
+    result = await execute_command_with_tools(
+        command,
+        execute_tool,
+        profile_name=profile.name,
+        model=profile.model,
+        max_tokens=profile.max_tokens,
+        max_iterations=profile.max_iterations,
+    )
+    if _should_retry_with_deep_profile(result, profile):
+        deep = PlannerProfile(
+            name="deep-fallback",
+            model=_DEEP_MODEL,
+            max_tokens=_DEEP_MAX_TOKENS,
+            max_iterations=_DEEP_MAX_ITERATIONS,
+        )
+        print(
+            "[planner] retrying with profile={} model={} max_tokens={} max_iterations={}".format(
+                deep.name, deep.model, deep.max_tokens, deep.max_iterations
+            )
+        )
+        result = await execute_command_with_tools(
+            command,
+            execute_tool,
+            profile_name=deep.name,
+            model=deep.model,
+            max_tokens=deep.max_tokens,
+            max_iterations=deep.max_iterations,
+        )
+    print("[timing] planner local-tools path took {:.1f}ms".format(elapsed_ms(started_at)))
+    return result
 
 
 async def execute_command_with_tools(
     command: AgentCommand,
     tool_executor: ToolExecutor,
-    max_iterations: int = _MAX_ITERATIONS,
+    profile_name: str,
+    model: str,
+    max_tokens: int,
+    max_iterations: int,
 ) -> str:
     """Run the agentic loop for a single voice command with an injected tool executor."""
+    planner_started_at = time.perf_counter()
     client = _make_client()
     system = _build_system_prompt()
     consecutive_non_action_rounds = 0
     post_action_verification_sent = False
 
     print(f"[planner] goal={command.text!r} — capturing initial screenshot")
+    screenshot_started_at = time.perf_counter()
     initial_result = await asyncio.to_thread(tool_executor, ToolCall(tool="screenshot", args={}))
+    print("[timing] initial screenshot took {:.1f}ms".format((time.perf_counter() - screenshot_started_at) * 1000.0))
     messages = [
         {
             "role": "user",
@@ -275,14 +459,15 @@ async def execute_command_with_tools(
     for iteration in range(max_iterations):
         print(f"[planner] iteration={iteration + 1}/{max_iterations}")
 
-        response = await asyncio.to_thread(
-            client.messages.create,
-            model=_MODEL,
-            max_tokens=4096,
+        response, resolved_model = await _create_message_with_fallbacks(
+            client=client,
+            profile_name=profile_name,
+            model=model,
+            max_tokens=max_tokens,
             system=system,
-            tools=TOOLS,
             messages=messages,
         )
+        model = resolved_model
 
         messages.append({"role": "assistant", "content": response.content})
 
@@ -322,7 +507,7 @@ async def execute_command_with_tools(
                 finished = True
                 continue
 
-            result = await asyncio.to_thread(tool_executor, ToolCall(tool=name, args=inputs))
+            result = await _run_tool(tool_executor, name, inputs)
 
             if name == "screenshot":
                 screenshot_requests += 1
@@ -377,9 +562,12 @@ async def execute_command_with_tools(
             settle_delay = _settle_delay_for_actions(action_calls, ran_browser_action)
             if settle_delay > 0:
                 await asyncio.sleep(settle_delay)
+                print("[timing] settle delay took {:.1f}ms".format(settle_delay * 1000.0))
             if not ran_browser_action:
                 print("[planner] capturing post-action screenshot")
+                post_started_at = time.perf_counter()
                 post_result = await asyncio.to_thread(tool_executor, ToolCall(tool="screenshot", args={}))
+                print("[timing] post-action screenshot took {:.1f}ms".format((time.perf_counter() - post_started_at) * 1000.0))
                 visible_state = _summarize_visible_state(post_result)
                 tool_results.append({"type": "text", "text": "Screen after your actions:"})
                 tool_results.extend(_screenshot_content(post_result))
@@ -429,6 +617,7 @@ async def execute_command_with_tools(
 
         if finished:
             print(f"[planner] done — {summary}")
+            print("[timing] execute_command_with_tools total took {:.1f}ms".format((time.perf_counter() - planner_started_at) * 1000.0))
             return summary
 
     return f"Reached {max_iterations} iterations without completing the task."

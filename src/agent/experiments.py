@@ -45,6 +45,9 @@ async def _main() -> None:
     summary = await execute_command_with_tools(
         command,
         executor.execute,
+        profile_name="fast",
+        model="claude-sonnet-4-20250514",
+        max_tokens=700,
         max_iterations=args.max_iterations,
     )
 

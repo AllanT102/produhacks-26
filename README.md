@@ -89,6 +89,14 @@ or
 ./scripts/run_mock.sh
 ```
 
+`run-mock` now injects a one-shot fake transcript from the terminal instead of running the live microphone loop with a fake transcriber.
+
+Example:
+
+```bash
+FAKE_TRANSCRIPT_TEXT="search youtube for trimentorship and play the first video" make run-mock
+```
+
 ### Run with local Whisper backend
 
 ```bash
@@ -110,6 +118,28 @@ WHISPER_MODEL_SIZE=small make run-whisper
 The app entry point logs transcript events and sends finalized commands into a simple agent loop.
 It also launches the desktop overlay automatically.
 If `PyObjC` is not installed yet, the app falls back to headless mode and prints a warning.
+
+### Run in dev type mode
+
+```bash
+make run-type
+```
+
+or
+
+```bash
+./scripts/run_type.sh
+```
+
+This mode disables microphone input and lets you type commands directly into the terminal with a `type>` prompt. It is the best mode for debugging planner and browser behavior without transcription noise.
+
+### Run in Wispr mode
+
+```bash
+make run-wispr
+```
+
+This mode opens the native overlay with an actual text input field. Click the field once, dictate into it with Wispr, then press Return or click `Send`. Unlike `run-mock`, it stays alive for repeated commands.
 
 ## How To Test
 
@@ -138,6 +168,75 @@ If you want the overlay too, reinstall dependencies after pulling the latest cha
 ```bash
 pip install -r requirements.txt
 ```
+
+## Browser Behavior
+
+By default, browser commands now use the local macOS + Chrome tool path:
+
+- `open_app` uses `open -a`, which reuses the existing app instance
+- Chrome interactions use the Apple Events browser tools in `src/tool_runtime/tools/browser.py`
+
+The heavier `browser-use` backend is now opt-in only. To enable it explicitly:
+
+```bash
+BROWSER_USE_ENABLED=1 make run-whisper
+```
+
+Leaving it off avoids slow browser-use startup and avoids launching a separate automation-driven browser session for normal commands.
+
+### Reuse Existing Chrome With Browser-Use
+
+If you want Browser Use to attach to an existing Chrome debugging session instead of launching its own managed browser, start Chrome with a remote debugging port and set `BROWSER_USE_CDP_URL`.
+
+Example:
+
+```bash
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222
+```
+
+Then run:
+
+```bash
+BROWSER_USE_ENABLED=1 BROWSER_USE_CDP_URL=http://127.0.0.1:9222 make run-whisper
+```
+
+With that setup:
+
+- Browser Use attaches to the existing Chrome session
+- the browser-use server keeps the browser session alive
+- follow-up browser commands can reuse the same browser context
+
+This is the best path if you want Browser Use for high-level navigation while still keeping a more natural browser experience.
+
+## Planner Speed
+
+The planner now uses two profiles:
+
+- fast profile for normal short voice commands
+- deep fallback only when the fast pass stalls
+
+Before the planner runs, the app also uses a generic direct-command router for low-latency primitives such as:
+
+- opening an app or URL
+- scrolling up or down
+- play/pause
+- mute and volume changes
+- brightness changes
+
+Only non-trivial commands fall through to the general planner.
+
+Default env vars:
+
+```bash
+ANTHROPIC_FAST_MODEL=claude-sonnet-4-20250514
+ANTHROPIC_FAST_MAX_TOKENS=700
+ANTHROPIC_FAST_MAX_ITERATIONS=5
+ANTHROPIC_DEEP_MODEL=claude-opus-4-20250514
+ANTHROPIC_DEEP_MAX_TOKENS=1200
+ANTHROPIC_DEEP_MAX_ITERATIONS=10
+```
+
+If you want the snappiest possible behavior, keep your normal app runs on the fast profile and only use the deep fallback for harder tasks.
 
 Then:
 
