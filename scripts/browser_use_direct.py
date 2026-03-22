@@ -38,7 +38,9 @@ Rules:
 @dataclass
 class CommandIntent:
     url: Optional[str] = None
+    open_in_new_tab: bool = False
     search_query: Optional[str] = None
+    search_provider: Optional[str] = None
     scroll_text: Optional[str] = None
     scroll_direction: Optional[str] = None
     scroll_amount: int = 0
@@ -62,8 +64,11 @@ def normalize_browser_command(command: str) -> str:
     text = _normalize_whitespace(command).strip()
     text = re.sub(r"^[\-\u2013\u2014•*]+\s*", "", text)
     text = re.sub(r"[.!?]+$", "", text).strip()
+    text = re.sub(r"^(?:oh|uh|um|ah|so|well|and|then)\b[\s,.-]*", "", text, flags=re.IGNORECASE)
 
     prefixes = (
+        "hi, ",
+        "hi ",
         "please ",
         "hey ",
         "okay ",
@@ -89,8 +94,14 @@ def normalize_browser_command(command: str) -> str:
     while text.lower().startswith("just "):
         text = text[5:].strip()
 
+    if re.match(
+        r"^you\s+(?:open|go|search|find|look|click|scroll|read|check|show|press|close|play|pause|message|reply|send|type|write)\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        text = re.sub(r"^you\s+", "", text, count=1, flags=re.IGNORECASE).strip()
+
     replacements = (
-        (r"^find\s+(.+)$", r"look up \1"),
         (r"^check my messages$", "open messages"),
         (r"^open my messages$", "open messages"),
         (r"^click messaging$", "open messages"),
@@ -110,12 +121,25 @@ def normalize_browser_command(command: str) -> str:
 def _clean_search_query(value: str) -> str:
     query = _normalize_whitespace(value).strip(" .")
     query = re.sub(
-        r"\s+(?:on\s+(?:youtube|linkedin|google)|and\s+(?:play|open|click|subscribe|pause|scroll).*)$",
+        r"\s+(?:on\s+(?:youtube(?:\s+music)?|linkedin|google)|and\s+(?:play|open|click|subscribe|pause|scroll).*)$",
         "",
         query,
         flags=re.IGNORECASE,
     )
     return query.strip(" .")
+
+
+def _extract_search_provider(text: str) -> Optional[str]:
+    lowered = _normalize_whitespace(text).lower()
+    match = re.search(r"\bon\s+(youtube(?:\s+music)?|linkedin|google)\b", lowered)
+    if match:
+        provider = match.group(1)
+        if provider == "youtube music":
+            return "youtube_music"
+        return provider
+    if lowered.startswith("look up "):
+        return "google"
+    return None
 
 
 def _extract_generic_click_target(text: str) -> tuple[Optional[str], Optional[str]]:
@@ -145,35 +169,58 @@ def _extract_generic_click_target(text: str) -> tuple[Optional[str], Optional[st
         return None, None
     if lower in {"his profile", "her profile", "their profile"}:
         return None, None
-    if len(label.split()) > 4:
+    max_words = 10 if click_kind_hint in {"link", "button", "tab"} else 8
+    if len(label.split()) > max_words:
         return None, None
+    if click_kind_hint is None and lower in {"x", "close", "dismiss"}:
+        click_kind_hint = "button"
     return label, click_kind_hint
 
 
-def _guess_open_site_url(text: str) -> Optional[str]:
-    match = re.match(
-        r"^(?:open|go to|navigate to|show)\s+([a-z0-9.-]+)(?:\.com)?$",
-        text.strip(),
-        flags=re.IGNORECASE,
-    )
-    if not match:
-        return None
-    host = match.group(1).lower()
-    if host in {"chrome", "browser", "messages", "notifications", "my network"}:
-        return None
+def _site_alias_url(target: str) -> Optional[str]:
+    normalized = _normalize_whitespace(target).lower()
     known_urls = {
+        "google": "https://www.google.com",
+        "google search": "https://www.google.com",
         "youtube": "https://www.youtube.com",
+        "youtube music": "https://music.youtube.com",
         "linkedin": "https://www.linkedin.com/feed/",
         "twitter": "https://x.com/home",
         "x": "https://x.com/home",
         "gmail": "https://mail.google.com",
         "github": "https://github.com",
+        "google maps": "https://maps.google.com",
+        "google docs": "https://docs.google.com",
+        "google drive": "https://drive.google.com",
+        "google calendar": "https://calendar.google.com",
     }
-    if host in known_urls:
-        return known_urls[host]
+    return known_urls.get(normalized)
+
+
+def _guess_site_url_from_target(target: str) -> Optional[str]:
+    alias_url = _site_alias_url(target)
+    if alias_url:
+        return alias_url
+
+    host = _normalize_whitespace(target).lower()
+    if host in {"chrome", "browser", "messages", "notifications", "my network"}:
+        return None
+    if " " in host:
+        return None
     if "." in host:
         return f"https://{host}"
     return f"https://www.{host}.com"
+
+
+def _guess_open_site_url(text: str) -> Optional[str]:
+    match = re.match(
+        r"^(?:open|go to|navigate to|show)\s+(.+?)$",
+        text.strip(),
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return _guess_site_url_from_target(match.group(1))
 
 
 def _is_enabled(name: str, default: bool = False) -> bool:
@@ -183,14 +230,16 @@ def _is_enabled(name: str, default: bool = False) -> bool:
     return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
-def _direct_search_url(lower: str, search_query: Optional[str]) -> Optional[str]:
+def _direct_search_url(search_provider: Optional[str], search_query: Optional[str]) -> Optional[str]:
     if not search_query:
         return None
-    if "youtube" in lower:
+    if search_provider == "youtube":
         return f"https://www.youtube.com/results?search_query={quote_plus(search_query)}"
-    if "linkedin" in lower:
+    if search_provider == "youtube_music":
+        return f"https://music.youtube.com/search?q={quote_plus(search_query)}"
+    if search_provider == "linkedin":
         return f"https://www.linkedin.com/search/results/all/?keywords={quote_plus(search_query)}&origin=GLOBAL_SEARCH_HEADER"
-    if lower.startswith("look up "):
+    if search_provider == "google":
         return f"https://www.google.com/search?q={quote_plus(search_query)}"
     return None
 
@@ -199,8 +248,22 @@ def parse_intent(command: str) -> CommandIntent:
     text = normalize_browser_command(command)
     lower = text.lower()
 
+    open_in_new_tab = False
     search_query = None
     click_kind_hint = None
+    new_tab_match = re.match(
+        r"^(?:open|start)\s+a new tab(?:\s+(?:with|for))?\s+(.+?)$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if new_tab_match:
+        target_url = _guess_site_url_from_target(new_tab_match.group(1))
+        if target_url:
+            open_in_new_tab = True
+            text = f"open {new_tab_match.group(1)}"
+            lower = text.lower()
+
+    search_provider = None
     search_patterns = [
         r"\bsearch up (?P<q>.+?)(?:,| then | and (?:open|click|subscribe|pause|scroll|play)\b|$)",
         r"\bsearch for (?P<q>.+?)(?:,| then | and (?:open|click|subscribe|pause|scroll)\b|$)",
@@ -210,6 +273,7 @@ def parse_intent(command: str) -> CommandIntent:
     for pattern in search_patterns:
         match = re.search(pattern, lower, flags=re.IGNORECASE)
         if match:
+            search_provider = _extract_search_provider(text)
             search_query = _clean_search_query(text[match.start("q"):match.end("q")])
             break
 
@@ -217,7 +281,7 @@ def parse_intent(command: str) -> CommandIntent:
     if url_match:
         url = url_match.group(0).rstrip(".,)")
     else:
-        url = _direct_search_url(lower, search_query)
+        url = _direct_search_url(search_provider, search_query)
         if url is not None:
             search_query = None
         else:
@@ -227,6 +291,18 @@ def parse_intent(command: str) -> CommandIntent:
     scroll_match = re.search(r"\bscroll to (?P<t>.+?)(?:,| then | and |$)", lower, flags=re.IGNORECASE)
     if scroll_match:
         scroll_text = _normalize_whitespace(text[scroll_match.start("t"):scroll_match.end("t")]).strip(" .")
+    if scroll_text is None:
+        go_down_match = re.search(
+            r"\bgo down to (?P<t>.+?)(?:,| then | and |$)",
+            lower,
+            flags=re.IGNORECASE,
+        )
+        if go_down_match:
+            scroll_text = _normalize_whitespace(text[go_down_match.start("t"):go_down_match.end("t")]).strip(" .")
+    if scroll_text is None:
+        find_match = re.match(r"^(?:find|locate)\s+(?P<t>.+?)$", text, flags=re.IGNORECASE)
+        if find_match:
+            scroll_text = _normalize_whitespace(find_match.group("t")).strip(" .")
 
     click_text = None
     if "subscribe" in lower:
@@ -255,7 +331,7 @@ def parse_intent(command: str) -> CommandIntent:
         route = "hard_reload"
     elif lower in {"new tab", "open new tab"}:
         route = "new_tab"
-    elif lower in {"close tab", "close this tab", "close current tab"}:
+    elif lower in {"close tab", "close the tab", "close this tab", "close current tab"}:
         route = "close_tab"
     elif lower in {"reopen closed tab", "undo close tab"}:
         route = "reopen_tab"
@@ -373,7 +449,9 @@ def parse_intent(command: str) -> CommandIntent:
 
     return CommandIntent(
         url=url,
+        open_in_new_tab=open_in_new_tab,
         search_query=search_query,
+        search_provider=search_provider,
         scroll_text=scroll_text,
         scroll_direction=scroll_direction,
         scroll_amount=scroll_amount,
@@ -442,6 +520,123 @@ def find_best_index(
             best_score = score
             best_index = block["index"]
     return best_index
+
+
+async def _scroll_container(
+    page,
+    *,
+    direction: Optional[str] = None,
+    amount: int = 0,
+    mode: str = "relative",
+) -> dict:
+    signed_amount = 0
+    if direction is not None:
+        signed_amount = -abs(amount) if direction == "up" else abs(amount)
+
+    result_text = await page.evaluate(
+        """(payload) => {
+            const mode = String(payload.mode || 'relative');
+            const amount = Number(payload.amount || 0);
+            const isVisible = (el) => {
+              if (!el) return false;
+              const rect = el.getBoundingClientRect();
+              const style = window.getComputedStyle(el);
+              return rect.width > 0
+                && rect.height > 0
+                && style.visibility !== 'hidden'
+                && style.display !== 'none';
+            };
+            const isScrollable = (el) => {
+              if (!el || el === document.body) return false;
+              const style = window.getComputedStyle(el);
+              const overflowY = style.overflowY || '';
+              const canScroll = /(auto|scroll|overlay)/i.test(overflowY);
+              return el.scrollHeight > el.clientHeight + 8 && canScroll;
+            };
+            const candidateScore = (el) => {
+              if (!isVisible(el)) return -1;
+              const rect = el.getBoundingClientRect();
+              const scrollRange = el.scrollHeight - el.clientHeight;
+              return scrollRange + Math.min(rect.width * rect.height, 2_000_000) / 1000;
+            };
+            const collectAncestors = (start, acc) => {
+              let node = start;
+              while (node && node !== document.body && node !== document.documentElement) {
+                if (node instanceof HTMLElement) acc.push(node);
+                node = node.parentElement;
+              }
+            };
+
+            const candidates = [];
+            const add = (el) => {
+              if (!el || candidates.includes(el)) return;
+              candidates.push(el);
+            };
+
+            collectAncestors(document.activeElement, candidates);
+            collectAncestors(document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2), candidates);
+            collectAncestors(document.querySelector('main'), candidates);
+
+            const scrollables = Array.from(document.querySelectorAll('*'))
+              .filter((el) => el instanceof HTMLElement && isScrollable(el))
+              .sort((a, b) => candidateScore(b) - candidateScore(a));
+            for (const el of scrollables.slice(0, 25)) add(el);
+
+            const root = document.scrollingElement || document.documentElement;
+            add(root);
+
+            let target = candidates.find((el) => isScrollable(el)) || root;
+            if (!target) target = root;
+
+            const before = target === root ? window.scrollY : target.scrollTop;
+
+            if (mode === 'inspect') {
+              // no-op, just measure current scroll position
+            } else if (mode === 'top') {
+              if (target === root) {
+                window.scrollTo({top: 0, left: 0, behavior: 'instant'});
+              } else {
+                target.scrollTo({top: 0, left: 0, behavior: 'instant'});
+              }
+            } else if (mode === 'bottom') {
+              if (target === root) {
+                window.scrollTo({top: root.scrollHeight, left: 0, behavior: 'instant'});
+              } else {
+                target.scrollTo({top: target.scrollHeight, left: 0, behavior: 'instant'});
+              }
+            } else if (target === root) {
+              window.scrollBy({top: amount, left: 0, behavior: 'instant'});
+            } else {
+              target.scrollBy({top: amount, left: 0, behavior: 'instant'});
+            }
+
+            const after = target === root ? window.scrollY : target.scrollTop;
+            const changed = Math.abs(after - before) >= 4;
+            const rect = target.getBoundingClientRect ? target.getBoundingClientRect() : {x: 0, y: 0, width: 0, height: 0};
+            return JSON.stringify({
+              ok: true,
+              changed,
+              before: Math.round(before),
+              after: Math.round(after),
+              target: target === root ? 'document' : (target.tagName || 'unknown').toLowerCase(),
+              id: target.id || '',
+              className: typeof target.className === 'string' ? target.className.slice(0, 120) : '',
+              bbox: {
+                x: Math.round(rect.left || 0),
+                y: Math.round(rect.top || 0),
+                width: Math.round(rect.width || 0),
+                height: Math.round(rect.height || 0),
+              },
+              href: window.location.href,
+              title: document.title
+            });
+        }""",
+        {"amount": signed_amount, "mode": mode},
+    )
+    result = json.loads(result_text or "{}")
+    if not result.get("ok"):
+        raise RuntimeError("Could not scroll the current page.")
+    return result
 
 
 async def _open_url(browser: Browser, url: str) -> None:
@@ -707,7 +902,10 @@ async def _click_text(browser: Browser, text: str, kind_hint: Optional[str] = No
                 .replace(/\\s+/g, ' ')
                 .trim();
             const q = normalize(original);
-            const tokens = q.split(/\\s+/).filter(Boolean);
+            const tokens = q
+              .split(/\\s+/)
+              .filter((token) => token && (token.length > 1 || q.length <= 2));
+            const shortQuery = tokens.length === 1 && tokens[0].length <= 2;
             const isVisible = (el) => {
               const rect = el.getBoundingClientRect();
               const style = window.getComputedStyle(el);
@@ -748,14 +946,14 @@ async def _click_text(browser: Browser, text: str, kind_hint: Optional[str] = No
               let score = 0;
               if (label === q) score += 120;
               if (rawLabel.trim().toLowerCase() === original.toLowerCase()) score += 25;
-              if (q && label.includes(q)) score += 40;
+              if (q && !shortQuery && label.includes(q)) score += 40;
               const allTokensPresent = tokens.length > 0 && tokens.every((token) => label.includes(token));
               if (allTokensPresent) score += 20;
               for (const token of tokens) {
                 const boundary = new RegExp(`(^|\\\\s)${token.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}(\\\\s|$)`, 'i');
                 if (boundary.test(label)) {
                   score += 12;
-                } else if (label.includes(token)) {
+                } else if (!shortQuery && label.includes(token)) {
                   score += 4;
                 }
               }
@@ -781,6 +979,16 @@ async def _click_text(browser: Browser, text: str, kind_hint: Optional[str] = No
                 if (tag === 'button' || role === 'button') score -= 8;
               } else if (kindHint === 'tab') {
                 if (role === 'tab') score += 24;
+              }
+              const aria = (el.getAttribute('aria-label') || '').trim().toLowerCase();
+              const title = (el.getAttribute('title') || '').trim().toLowerCase();
+              if (shortQuery && q === 'x') {
+                if (label === 'x') score += 80;
+                if (aria.includes('close') || title.includes('close') || label === 'close' || label === 'dismiss') {
+                  score += 95;
+                }
+                if (tag === 'button' || role === 'button') score += 22;
+                if (tag === 'a' || role === 'link') score -= 20;
               }
 
               if (score <= 0) continue;
@@ -904,9 +1112,9 @@ async def _open_route(browser: Browser, route: str) -> dict:
     if route == "playback_toggle":
         page = await browser.must_get_current_page()
         if "youtube.com" in current_url:
-            await page.keyboard.press("k")
+            await page.press("k")
         else:
-            await page.keyboard.press("Space")
+            await page.press("Space")
         await asyncio.sleep(0.15)
         state = await browser.get_browser_state_summary(include_screenshot=False)
         return {"route": route, "url": state.url, "title": state.title}
@@ -915,7 +1123,7 @@ async def _open_route(browser: Browser, route: str) -> dict:
 
     if route == "mute_toggle":
         if "youtube.com" in current_url:
-            await page.keyboard.press("m")
+            await page.press("m")
         else:
             raise RuntimeError("Mute toggle is only supported directly on YouTube.")
         await asyncio.sleep(0.15)
@@ -924,9 +1132,9 @@ async def _open_route(browser: Browser, route: str) -> dict:
 
     if route == "fullscreen_toggle":
         if "youtube.com" in current_url:
-            await page.keyboard.press("f")
+            await page.press("f")
         else:
-            await page.keyboard.press("Meta+Control+f")
+            await page.press("Meta+Control+f")
         await asyncio.sleep(0.2)
         state = await browser.get_browser_state_summary(include_screenshot=False)
         return {"route": route, "url": state.url, "title": state.title}
@@ -934,7 +1142,7 @@ async def _open_route(browser: Browser, route: str) -> dict:
     if route == "seek_forward":
         if "youtube.com" not in current_url:
             raise RuntimeError("Seek forward is only supported directly on YouTube.")
-        await page.keyboard.press("l")
+        await page.press("l")
         await asyncio.sleep(0.1)
         state = await browser.get_browser_state_summary(include_screenshot=False)
         return {"route": route, "url": state.url, "title": state.title}
@@ -942,7 +1150,7 @@ async def _open_route(browser: Browser, route: str) -> dict:
     if route == "seek_backward":
         if "youtube.com" not in current_url:
             raise RuntimeError("Seek backward is only supported directly on YouTube.")
-        await page.keyboard.press("j")
+        await page.press("j")
         await asyncio.sleep(0.1)
         state = await browser.get_browser_state_summary(include_screenshot=False)
         return {"route": route, "url": state.url, "title": state.title}
@@ -966,75 +1174,65 @@ async def _open_route(browser: Browser, route: str) -> dict:
         return {"route": route, "url": state.url, "title": state.title}
 
     if route == "hard_reload":
-        await page.keyboard.press("Meta+Shift+r")
+        await page.press("Meta+Shift+r")
         await asyncio.sleep(0.45)
         state = await browser.get_browser_state_summary(include_screenshot=False)
         return {"route": route, "url": state.url, "title": state.title}
 
     if route == "new_tab":
-        await page.keyboard.press("Meta+t")
+        await page.press("Meta+t")
         await asyncio.sleep(0.15)
         state = await browser.get_browser_state_summary(include_screenshot=False)
         return {"route": route, "url": state.url, "title": state.title}
 
     if route == "close_tab":
-        await page.keyboard.press("Meta+w")
+        await page.press("Meta+w")
         await asyncio.sleep(0.15)
         state = await browser.get_browser_state_summary(include_screenshot=False)
         return {"route": route, "url": state.url, "title": state.title}
 
     if route == "reopen_tab":
-        await page.keyboard.press("Meta+Shift+t")
+        await page.press("Meta+Shift+t")
         await asyncio.sleep(0.2)
         state = await browser.get_browser_state_summary(include_screenshot=False)
         return {"route": route, "url": state.url, "title": state.title}
 
     if route == "next_tab":
-        await page.keyboard.press("Control+Tab")
+        await page.press("Control+Tab")
         await asyncio.sleep(0.15)
         state = await browser.get_browser_state_summary(include_screenshot=False)
         return {"route": route, "url": state.url, "title": state.title}
 
     if route == "previous_tab":
-        await page.keyboard.press("Control+Shift+Tab")
+        await page.press("Control+Shift+Tab")
         await asyncio.sleep(0.15)
         state = await browser.get_browser_state_summary(include_screenshot=False)
         return {"route": route, "url": state.url, "title": state.title}
 
     if route == "address_bar":
-        await page.keyboard.press("Meta+l")
+        await page.press("Meta+l")
         await asyncio.sleep(0.1)
         state = await browser.get_browser_state_summary(include_screenshot=False)
         return {"route": route, "url": state.url, "title": state.title}
 
     if route == "scroll_top":
-        await page.evaluate(
-            """() => {
-                window.scrollTo({top: 0, left: 0, behavior: 'instant'});
-                return {y: Math.round(window.scrollY), href: window.location.href, title: document.title};
-            }"""
-        )
+        result = await _scroll_container(page, mode="top")
         await asyncio.sleep(0.1)
         state = await browser.get_browser_state_summary(include_screenshot=False)
-        return {"route": route, "url": state.url, "title": state.title}
+        return {"route": route, "url": state.url, "title": state.title, **result}
 
     if route == "scroll_bottom":
-        await page.evaluate(
-            """() => {
-                window.scrollTo({top: document.body.scrollHeight, left: 0, behavior: 'instant'});
-                return {y: Math.round(window.scrollY), href: window.location.href, title: document.title};
-            }"""
-        )
+        result = await _scroll_container(page, mode="bottom")
         await asyncio.sleep(0.1)
         state = await browser.get_browser_state_summary(include_screenshot=False)
-        return {"route": route, "url": state.url, "title": state.title}
+        return {"route": route, "url": state.url, "title": state.title, **result}
 
     raise RuntimeError(f"Unsupported route '{route}'")
 
 
 async def _switch_to_tab(browser: Browser, tab_index: int) -> dict:
     page = await browser.must_get_current_page()
-    await page.keyboard.press(f"Meta+{tab_index}")
+    await page.press(f"Meta+{tab_index}")
     await asyncio.sleep(0.15)
     state = await browser.get_browser_state_summary(include_screenshot=False)
     return {
@@ -1135,19 +1333,21 @@ async def _click_first_candidate(browser: Browser, kind: str, query: Optional[st
 
 async def _scroll_page(browser: Browser, direction: str, amount: int) -> dict:
     page = await browser.must_get_current_page()
-    signed_amount = -abs(amount) if direction == "up" else abs(amount)
-    await page.evaluate(
-        """(amount) => {
-            window.scrollBy({top: amount, left: 0, behavior: 'instant'});
-            return {y: Math.round(window.scrollY), href: window.location.href, title: document.title};
-        }""",
-        signed_amount,
-    )
+    result = await _scroll_container(page, direction=direction, amount=amount, mode="relative")
+    if not result.get("changed"):
+        before = await _scroll_container(page, mode="inspect")
+        key = "PageUp" if direction == "up" else "PageDown"
+        await page.press(key)
+        await asyncio.sleep(0.15)
+        after = await _scroll_container(page, mode="inspect")
+        after["changed"] = abs((after.get("after") or 0) - (before.get("after") or 0)) >= 4
+        result = after
     await asyncio.sleep(0.15)
     state = await browser.get_browser_state_summary(include_screenshot=False)
     return {
         "direction": direction,
         "amount": amount,
+        **result,
         "url": state.url,
         "title": state.title,
     }
@@ -1158,6 +1358,7 @@ async def run_command(command: str, profile_directory: str) -> dict:
     if not any(
         [
             intent.url,
+            intent.open_in_new_tab,
             intent.search_query,
             intent.scroll_text,
             intent.scroll_direction,
@@ -1202,31 +1403,49 @@ def build_browser(profile_directory: str) -> Browser:
     )
 
 
-def _build_agent_task(text: str) -> str:
+def _same_site(actual_url: str, target_url: str) -> bool:
+    actual = urlparse(actual_url or "")
+    target = urlparse(target_url or "")
+    if not actual.netloc or not target.netloc:
+        return False
+    actual_host = actual.netloc.lower().removeprefix("www.")
+    target_host = target.netloc.lower().removeprefix("www.")
+    aliases = {
+        ("twitter.com", "x.com"),
+        ("x.com", "twitter.com"),
+    }
+    return actual_host == target_host or (actual_host, target_host) in aliases
+
+
+def _build_agent_task(text: str, required_url: Optional[str] = None) -> str:
     template = _DEFAULT_SYSTEM_PROMPT
     if _SYSTEM_PROMPT_PATH.exists():
         template = _SYSTEM_PROMPT_PATH.read_text()
-    return template.replace("[user prompt]", text)
+    prompt = text
+    if required_url:
+        prompt += (
+            f"\n\nCritical success condition: the active browser tab must end on {required_url} "
+            "or the corresponding site before you finish."
+        )
+    return template.replace("[user prompt]", prompt)
 
 
-async def run_agent_fallback_in_browser(command: str, browser: Browser) -> dict:
-    normalized_command = normalize_browser_command(command)
-    started_at = time.perf_counter()
+async def _run_agent_once(
+    command: str,
+    browser: Browser,
+    model_name: str,
+    required_url: Optional[str],
+) -> tuple[str, dict]:
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
-        return {
-            "success": False,
-            "error": "ANTHROPIC_API_KEY is required for browser-use agent fallback.",
-            "command": normalized_command,
-        }
+        raise RuntimeError("ANTHROPIC_API_KEY is required for browser-use agent fallback.")
 
-    model_name = os.getenv("BROWSER_USE_MODEL", "claude-3-5-haiku-20241022")
     llm = ChatAnthropic(
         model=model_name,
         api_key=api_key,
     )
     agent = Agent(
-        task=_build_agent_task(normalized_command),
+        task=_build_agent_task(command, required_url=required_url),
         llm=llm,
         browser_session=browser,
         use_thinking=False,
@@ -1237,19 +1456,81 @@ async def run_agent_fallback_in_browser(command: str, browser: Browser) -> dict:
         max_failures=3,
         step_timeout=int(os.getenv("BROWSER_USE_AGENT_STEP_TIMEOUT", "90")),
     )
+    started_at = time.perf_counter()
     result = await agent.run()
     state = await browser.get_browser_state_summary(include_screenshot=False)
+    payload = {
+        "url": state.url,
+        "title": state.title,
+        "summary": result.final_result() or f"Completed browser action for '{command}' on {state.title or state.url}.",
+        "timings": {
+            "agent_fallback_ms": round((time.perf_counter() - started_at) * 1000.0, 1),
+        },
+    }
+    return result.final_result() or "", payload
+
+
+def _agent_navigation_satisfied(before_url: str, after_url: str, required_url: Optional[str]) -> bool:
+    if not required_url:
+        return True
+    if not after_url:
+        return False
+    if _same_site(after_url, required_url):
+        return True
+    return before_url != after_url and _same_site(after_url, required_url)
+
+
+async def run_agent_fallback_in_browser(command: str, browser: Browser) -> dict:
+    normalized_command = normalize_browser_command(command)
+    before_state = await browser.get_browser_state_summary(include_screenshot=False)
+    before_url = str(before_state.url or "")
+    required_url = parse_intent(normalized_command).url
+
+    model_name = os.getenv("BROWSER_USE_MODEL", "claude-3-5-haiku-20241022")
+    _, payload = await _run_agent_once(normalized_command, browser, model_name, required_url)
+    after_url = str(payload.get("url") or "")
+
+    if _agent_navigation_satisfied(before_url, after_url, required_url):
+        return {
+            "success": True,
+            "mode": "agent",
+            "command": normalized_command,
+            "model": model_name,
+            **payload,
+        }
+
+    retry_model = os.getenv("BROWSER_USE_RETRY_MODEL", "claude-sonnet-4-20250514")
+    if retry_model == model_name:
+        return {
+            "success": False,
+            "command": normalized_command,
+            "error": f"Agent fallback did not reach {required_url or 'the requested destination'}",
+            "model": model_name,
+            **payload,
+        }
+
+    _, retry_payload = await _run_agent_once(normalized_command, browser, retry_model, required_url)
+    retry_after_url = str(retry_payload.get("url") or "")
+    if not _agent_navigation_satisfied(before_url, retry_after_url, required_url):
+        return {
+            "success": False,
+            "command": normalized_command,
+            "error": f"Agent fallback did not reach {required_url or 'the requested destination'}",
+            "model": retry_model,
+            **retry_payload,
+        }
+
+    retry_payload.setdefault("timings", {})
+    first_ms = (payload.get("timings") or {}).get("agent_fallback_ms", 0.0)
+    second_ms = (retry_payload.get("timings") or {}).get("agent_fallback_ms", 0.0)
+    retry_payload["timings"]["agent_fallback_ms_total"] = round(first_ms + second_ms, 1)
+    retry_payload["retried_from_model"] = model_name
     return {
         "success": True,
         "mode": "agent",
         "command": normalized_command,
-        "model": model_name,
-        "url": state.url,
-        "title": state.title,
-        "summary": result.final_result() or f"Completed browser action for '{normalized_command}' on {state.title or state.url}.",
-        "timings": {
-            "agent_fallback_ms": round((time.perf_counter() - started_at) * 1000.0, 1),
-        },
+        "model": retry_model,
+        **retry_payload,
     }
 
 
@@ -1260,6 +1541,7 @@ async def run_command_in_browser(command: str, browser: Browser) -> dict:
     if not any(
         [
             intent.url,
+            intent.open_in_new_tab,
             intent.search_query,
             intent.scroll_text,
             intent.scroll_direction,
@@ -1281,6 +1563,10 @@ async def run_command_in_browser(command: str, browser: Browser) -> dict:
             "command": normalized_command,
             "actions": [],
         }
+
+        if intent.open_in_new_tab:
+            route_result = await _open_route(browser, "new_tab")
+            result["actions"].append({"tool": "route", "route": "new_tab", **route_result})
 
         if intent.url:
             await _open_url(browser, intent.url)

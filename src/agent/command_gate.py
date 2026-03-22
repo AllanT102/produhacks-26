@@ -15,12 +15,26 @@ class CommandGateDecision:
 
 
 _POLITE_PREFIXES = (
+    "hi, ",
+    "hi ",
+    "ok, ",
+    "ok ",
+    "okay, ",
+    "okay ",
     "please ",
     "can you ",
     "could you ",
     "would you ",
     "will you ",
     "can u ",
+)
+
+_DISCOURSE_PREFIXES = (
+    "oh ",
+    "oh, ",
+    "and ",
+    "then ",
+    "so ",
 )
 
 _ACTION_PREFIXES = (
@@ -43,6 +57,8 @@ _ACTION_PREFIXES = (
     "press ",
     "open ",
     "go to ",
+    "go down ",
+    "go down to ",
     "search ",
     "search for ",
     "search up ",
@@ -155,13 +171,32 @@ def should_execute_final_transcript(text: str, source: str) -> CommandGateDecisi
         return CommandGateDecision(False, "non-word")
 
     stripped = lower
-    for prefix in _POLITE_PREFIXES:
-        if stripped.startswith(prefix):
-            stripped = stripped[len(prefix):].strip()
-            break
+    changed = True
+    while changed:
+        changed = False
+        for prefix in _POLITE_PREFIXES:
+            if stripped.startswith(prefix):
+                stripped = stripped[len(prefix):].strip()
+                changed = True
+                break
+
+    changed = True
+    while changed:
+        changed = False
+        for prefix in _DISCOURSE_PREFIXES:
+            if stripped.startswith(prefix):
+                stripped = stripped[len(prefix):].strip()
+                changed = True
+                break
 
     while stripped.startswith("just "):
         stripped = stripped[5:].strip()
+
+    if re.match(
+        r"^you\s+(?:open|go|search|find|look|click|scroll|read|check|show|press|close|play|pause|message|reply|send|type|write)\b",
+        stripped,
+    ):
+        stripped = re.sub(r"^you\s+", "", stripped, count=1).strip()
 
     if any(stripped.startswith(prefix) for prefix in _ACTION_PREFIXES):
         message_match = re.search(r"\b(?:send|write|reply)\b.*\b(?:say|saying)\b\s+(.+)$", stripped)
