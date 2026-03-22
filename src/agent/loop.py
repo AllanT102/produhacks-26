@@ -20,23 +20,20 @@ async def run_agent_loop(
     agent_queue: "asyncio.Queue[AgentCommand]",
     controller: AgentController,
     on_status: Optional[StatusCallback] = None,
+    on_step: Optional[Callable[[str], None]] = None,
 ) -> None:
-    """Consume finalized transcript commands and run the planner with status updates.
-
-    Any commands that arrive while the agent is busy are drained and discarded
-    so the same utterance cannot trigger multiple back-to-back executions.
-    """
+    """Consume finalized transcript commands and run the planner with status updates."""
     while True:
         command = await agent_queue.get()
         try:
             controller.reset()
             await _emit_status(on_status, "processing", command.text)
             print(f"[agent] received transcript_id={command.transcript_id} text={command.text!r}")
-            task = asyncio.create_task(execute_command(command))
+            task = asyncio.create_task(execute_command(command, on_step=on_step))
             controller.set_current_task(task)
             summary = await task
             print(f"[agent] result={summary}")
-            await _emit_status(on_status, "idle", "Ready")
+            await _emit_status(on_status, "done", summary)
         except asyncio.CancelledError:
             print("[agent] stopped")
             await _emit_status(on_status, "stopped", "Stopped")

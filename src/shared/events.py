@@ -37,6 +37,6 @@ class AgentCommand:
 
 @dataclass
 class UIEvent:
-    type: Literal["transcript", "agent_status"]
+    type: Literal["transcript", "agent_status", "agent_step"]
     payload: Dict[str, Any]
     timestamp: float = field(default_factory=time.time)

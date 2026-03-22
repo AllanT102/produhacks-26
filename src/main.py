@@ -124,6 +124,7 @@ def main() -> None:
                     agent_queue,
                     controller=controller,
                     on_status=lambda state, detail: handle_agent_status(state, detail, ui_queue),
+                    on_step=lambda text: publish_ui_event(ui_queue, "agent_status", {"state": "processing", "step": text}),
                 )
             )
             try:
@@ -144,14 +145,6 @@ def main() -> None:
     backend_thread = threading.Thread(target=start_backend, daemon=True)
     backend_thread.start()
     loop_ready.wait()
-
-    from src.tool_runtime.tools.browser import get_manager as _get_browser
-    _browser_mgr = None
-    try:
-        _browser_mgr = _get_browser()
-        print("[browser] Chrome launched")
-    except Exception as exc:
-        print(f"[browser] WARNING: could not launch Chrome: {exc}")
 
     def stop_llm() -> None:
         controller = shared["controller"]
@@ -204,12 +197,6 @@ def main() -> None:
             loop = shared.get("loop")
             if service is not None and loop is not None:
                 loop.call_soon_threadsafe(service.stop)
-        finally:
-            if _browser_mgr is not None:
-                try:
-                    _browser_mgr.shutdown()
-                except Exception:
-                    pass
         return
 
     overlay = overlay_class(event_queue=ui_queue, on_stop=stop_llm, on_quit=quit_app)
@@ -220,11 +207,6 @@ def main() -> None:
         loop = shared.get("loop")
         if service is not None and loop is not None:
             loop.call_soon_threadsafe(service.stop)
-        if _browser_mgr is not None:
-            try:
-                _browser_mgr.shutdown()
-            except Exception:
-                pass
         shutdown_complete.wait(timeout=1.5)
 
 

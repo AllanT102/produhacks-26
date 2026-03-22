@@ -2,7 +2,8 @@
 
 import math
 import queue
-from dataclasses import dataclass
+import warnings
+from dataclasses import dataclass, field
 from typing import Callable
 
 from src.shared.events import UIEvent
@@ -35,10 +36,18 @@ except ImportError as exc:
 STATUS_STYLES = {
     "listening": {"dot": (0.11, 0.63, 0.34), "label": "Listening", "chip": (0.90, 0.97, 0.93)},
     "processing": {"dot": (0.93, 0.56, 0.09), "label": "Thinking", "chip": (0.99, 0.94, 0.88)},
+    "done": {"dot": (0.11, 0.63, 0.34), "label": "Done", "chip": (0.90, 0.97, 0.93)},
     "idle": {"dot": (0.22, 0.49, 0.91), "label": "Ready", "chip": (0.90, 0.94, 0.99)},
     "stopped": {"dot": (0.86, 0.25, 0.25), "label": "Stopped", "chip": (0.99, 0.91, 0.91)},
     "error": {"dot": (0.72, 0.19, 0.19), "label": "Error", "chip": (0.98, 0.90, 0.90)},
 }
+
+_COMPACT_HEIGHT = 88.0
+_EXPANDED_HEIGHT = 140.0
+_CTRL_OFFSET = _EXPANDED_HEIGHT - _COMPACT_HEIGHT  # 52 — amount controls shift up
+
+
+_DONE_TIMEOUT_TICKS = 75  # ~6 seconds at 0.08s/tick
 
 
 @dataclass
@@ -46,6 +55,7 @@ class OverlayState:
     status: str = "listening"
     transcript: str = ""
     detail: str = "Mic live"
+    step: str = ""
 
 
 class OverlayDelegate(NSObject):
@@ -89,12 +99,17 @@ class VoiceOverlay:
         self.app = NSApplication.sharedApplication()
         self.app.setActivationPolicy_(NSApplicationActivationPolicyRegular)
         self._pulse_tick = 0
+        self._done_ticks = 0
 
         width = 432.0
-        height = 88.0
+        height = _COMPACT_HEIGHT
         frame = NSScreen.mainScreen().visibleFrame()
         x = frame.origin.x + ((frame.size.width - width) / 2.0)
         y = frame.origin.y + frame.size.height - height - 26.0
+
+        self._base_x = x
+        self._base_y = y
+        self._width = width
 
         self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(x, y, width, height),
@@ -116,15 +131,18 @@ class VoiceOverlay:
         content.setWantsLayer_(True)
         content.layer().setCornerRadius_(24.0)
         content.layer().setBorderWidth_(1.0)
-        content.layer().setBorderColor_(
-            NSColor.colorWithCalibratedRed_green_blue_alpha_(0.83, 0.83, 0.82, 0.82).CGColor()
-        )
-        content.layer().setBackgroundColor_(
-            NSColor.colorWithCalibratedRed_green_blue_alpha_(0.97, 0.97, 0.96, 0.94).CGColor()
-        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            content.layer().setBorderColor_(
+                NSColor.colorWithCalibratedRed_green_blue_alpha_(0.83, 0.83, 0.82, 0.82).CGColor()
+            )
+            content.layer().setBackgroundColor_(
+                NSColor.colorWithCalibratedRed_green_blue_alpha_(0.97, 0.97, 0.96, 0.94).CGColor()
+            )
         self.window.setContentView_(content)
         self.content = content
 
+        # --- Status chip (y shifted up by _CTRL_OFFSET when expanded) ---
         self.status_chip = NSView.alloc().initWithFrame_(NSMakeRect(18, 50, 108, 24))
         self.status_chip.setWantsLayer_(True)
         self.status_chip.layer().setCornerRadius_(12.0)
@@ -156,10 +174,12 @@ class VoiceOverlay:
         self.stop_button.setAction_("stopClicked:")
         self.stop_button.setBordered_(False)
         self.stop_button.setWantsLayer_(True)
-        self.stop_button.layer().setCornerRadius_(14.0)
-        self.stop_button.layer().setBackgroundColor_(
-            NSColor.colorWithCalibratedRed_green_blue_alpha_(0.95, 0.91, 0.90, 1.0).CGColor()
-        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            self.stop_button.layer().setCornerRadius_(14.0)
+            self.stop_button.layer().setBackgroundColor_(
+                NSColor.colorWithCalibratedRed_green_blue_alpha_(0.95, 0.91, 0.90, 1.0).CGColor()
+            )
         self.stop_button.setFont_(NSFont.boldSystemFontOfSize_(12))
         self.stop_button.setContentTintColor_(
             NSColor.colorWithCalibratedRed_green_blue_alpha_(0.61, 0.18, 0.16, 1.0)
@@ -172,10 +192,12 @@ class VoiceOverlay:
         self.quit_button.setAction_("quitClicked:")
         self.quit_button.setBordered_(False)
         self.quit_button.setWantsLayer_(True)
-        self.quit_button.layer().setCornerRadius_(14.0)
-        self.quit_button.layer().setBackgroundColor_(
-            NSColor.colorWithCalibratedRed_green_blue_alpha_(0.92, 0.92, 0.91, 1.0).CGColor()
-        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            self.quit_button.layer().setCornerRadius_(14.0)
+            self.quit_button.layer().setBackgroundColor_(
+                NSColor.colorWithCalibratedRed_green_blue_alpha_(0.92, 0.92, 0.91, 1.0).CGColor()
+            )
         self.quit_button.setFont_(NSFont.boldSystemFontOfSize_(14))
         self.quit_button.setContentTintColor_(
             NSColor.colorWithCalibratedRed_green_blue_alpha_(0.35, 0.35, 0.35, 1.0)
@@ -211,6 +233,29 @@ class VoiceOverlay:
         self.detail_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(0.42, 1.0))
         content.addSubview_(self.detail_label)
 
+        # --- Step / result panel (hidden until agent is running) ---
+        self.separator = NSView.alloc().initWithFrame_(NSMakeRect(18, 18, 396, 1))
+        self.separator.setWantsLayer_(True)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            self.separator.layer().setBackgroundColor_(
+                NSColor.colorWithCalibratedWhite_alpha_(0.0, 0.08).CGColor()
+            )
+        self.separator.setHidden_(True)
+        content.addSubview_(self.separator)
+
+        self.step_label = NSTextField.alloc().initWithFrame_(NSMakeRect(18, 0, 396, 16))
+        self.step_label.setBezeled_(False)
+        self.step_label.setDrawsBackground_(False)
+        self.step_label.setEditable_(False)
+        self.step_label.setSelectable_(False)
+        self.step_label.setFont_(NSFont.systemFontOfSize_(11))
+        self.step_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(0.35, 1.0))
+        self.step_label.setLineBreakMode_(4)  # truncate tail
+        self.step_label.setHidden_(True)
+        content.addSubview_(self.step_label)
+
+        self._current_height = _COMPACT_HEIGHT
         self.refresh_ui()
         self.timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             0.08,
@@ -219,6 +264,50 @@ class VoiceOverlay:
             None,
             True,
         )
+
+    # ------------------------------------------------------------------
+    # Window resize helpers
+    # ------------------------------------------------------------------
+
+    def _set_window_height(self, new_height: float) -> None:
+        """Resize the window keeping the top edge fixed."""
+        if abs(self._current_height - new_height) < 1:
+            return
+        self._current_height = new_height
+        offset = _CTRL_OFFSET if new_height > _COMPACT_HEIGHT else 0.0
+        # Reposition controls that belong to the top bar
+        for view, base_y in [
+            (self.status_chip, 50),
+            (self.stop_button, 48),
+            (self.quit_button, 48),
+            (self.detail_label, 54),
+            (self.transcript_label, 22),
+            (self.placeholder_label, 22),
+        ]:
+            r = view.frame()
+            view.setFrame_(NSMakeRect(r.origin.x, base_y + offset, r.size.width, r.size.height))
+
+        # Separator sits just below the transcript area
+        sep_y = 16 + offset - 6
+        sr = self.separator.frame()
+        self.separator.setFrame_(NSMakeRect(sr.origin.x, sep_y, sr.size.width, sr.size.height))
+
+        # Step label sits 4px below separator
+        self.step_label.setFrame_(NSMakeRect(18, sep_y - 18, 396, 16))
+
+        # Resize content view
+        self.content.setFrame_(NSMakeRect(0, 0, self._width, new_height))
+        self.content.layer().setCornerRadius_(24.0)
+
+        # Resize & reposition window (keep top edge fixed)
+        screen_frame = NSScreen.mainScreen().visibleFrame()
+        wx = screen_frame.origin.x + ((screen_frame.size.width - self._width) / 2.0)
+        wy = screen_frame.origin.y + screen_frame.size.height - new_height - 26.0
+        self.window.setFrame_display_animate_(
+            NSMakeRect(wx, wy, self._width, new_height), True, False
+        )
+
+    # ------------------------------------------------------------------
 
     def run(self) -> None:
         """Start the overlay event loop."""
@@ -241,11 +330,27 @@ class VoiceOverlay:
             except queue.Empty:
                 break
             self.handle_event(event)
+
+        # Auto-clear done state after timeout
+        if self.state.status == "done":
+            self._done_ticks += 1
+            if self._done_ticks >= _DONE_TIMEOUT_TICKS:
+                self.state.status = "listening"
+                self.state.detail = "Mic live"
+                self.state.step = ""
+                self._done_ticks = 0
+                self.refresh_ui()
+
         self._update_animation()
 
     def handle_event(self, event: UIEvent) -> None:
         """Update visible state from an incoming event."""
         if event.type == "transcript":
+            # Any new voice activity clears the done state
+            if self.state.status == "done":
+                self.state.status = "listening"
+                self.state.step = ""
+                self._done_ticks = 0
             self.state.transcript = event.payload.get("text", self.state.transcript) or "..."
             transcript_type = event.payload.get("kind", "partial")
             if transcript_type == "partial":
@@ -255,8 +360,17 @@ class VoiceOverlay:
             else:
                 self.state.detail = "Command captured"
         elif event.type == "agent_status":
-            self.state.status = event.payload.get("state", self.state.status)
-            self.state.detail = event.payload.get("detail", self.state.detail)
+            new_state = event.payload.get("state", self.state.status)
+            self.state.status = new_state
+            if "step" in event.payload:
+                self.state.step = event.payload["step"]
+            else:
+                self.state.detail = event.payload.get("detail", self.state.detail)
+                if new_state == "done":
+                    self.state.step = event.payload.get("detail", "")
+                    self._done_ticks = 0
+                elif new_state not in ("processing",):
+                    self.state.step = ""
 
         self.refresh_ui()
 
@@ -265,20 +379,36 @@ class VoiceOverlay:
         style = STATUS_STYLES.get(self.state.status, STATUS_STYLES["idle"])
         red, green, blue = style["dot"]
         chip_red, chip_green, chip_blue = style["chip"]
-        self.status_chip.layer().setBackgroundColor_(
-            NSColor.colorWithCalibratedRed_green_blue_alpha_(chip_red, chip_green, chip_blue, 1.0).CGColor()
-        )
-        self.dot.layer().setBackgroundColor_(
-            NSColor.colorWithCalibratedRed_green_blue_alpha_(red, green, blue, 1.0).CGColor()
-        )
-        self.dot_halo.layer().setBackgroundColor_(
-            NSColor.colorWithCalibratedRed_green_blue_alpha_(red, green, blue, 0.18).CGColor()
-        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            self.status_chip.layer().setBackgroundColor_(
+                NSColor.colorWithCalibratedRed_green_blue_alpha_(chip_red, chip_green, chip_blue, 1.0).CGColor()
+            )
+            self.dot.layer().setBackgroundColor_(
+                NSColor.colorWithCalibratedRed_green_blue_alpha_(red, green, blue, 1.0).CGColor()
+            )
+            self.dot_halo.layer().setBackgroundColor_(
+                NSColor.colorWithCalibratedRed_green_blue_alpha_(red, green, blue, 0.18).CGColor()
+            )
         self.status_label.setStringValue_(style["label"])
         self.transcript_label.setStringValue_(self.state.transcript)
         self.placeholder_label.setHidden_(bool(self.state.transcript))
         self.transcript_label.setHidden_(not bool(self.state.transcript))
         self.detail_label.setStringValue_(self.state.detail)
+
+        show_step = bool(self.state.step) and self.state.status in ("processing", "done")
+        self.step_label.setHidden_(not show_step)
+        self.separator.setHidden_(not show_step)
+
+        if show_step:
+            self.step_label.setStringValue_(self.state.step)
+            # Done result gets slightly darker text
+            alpha = 0.55 if self.state.status == "done" else 0.35
+            self.step_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(alpha, 1.0))
+            self._set_window_height(_EXPANDED_HEIGHT)
+        else:
+            self._set_window_height(_COMPACT_HEIGHT)
+
         self._update_animation()
 
     def _update_animation(self) -> None:
