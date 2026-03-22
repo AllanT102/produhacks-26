@@ -154,8 +154,14 @@ TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "start_x": {"type": "integer", "description": "Drag start X coordinate"},
-                "start_y": {"type": "integer", "description": "Drag start Y coordinate"},
+                "start_x": {
+                    "type": "integer",
+                    "description": "Drag start X coordinate",
+                },
+                "start_y": {
+                    "type": "integer",
+                    "description": "Drag start Y coordinate",
+                },
                 "end_x": {"type": "integer", "description": "Drag end X coordinate"},
                 "end_y": {"type": "integer", "description": "Drag end Y coordinate"},
                 "duration": {
@@ -191,6 +197,50 @@ TOOLS = [
         "name": "browser_get_page",
         "description": "Get the URL and title of the active Google Chrome tab.",
         "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "browser_extract_text",
+        "description": (
+            "Extract readable text from the active Google Chrome tab for read-aloud and voice feedback. "
+            "Supports page-level text, the current selection, the headline, or the first paragraph."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "scope": {
+                    "type": "string",
+                    "enum": [
+                        "page",
+                        "selection",
+                        "headline",
+                        "first_paragraph",
+                        "focus",
+                    ],
+                    "description": "Which part of the page to extract",
+                },
+                "fallback_scope": {
+                    "type": "string",
+                    "enum": [
+                        "",
+                        "page",
+                        "selection",
+                        "headline",
+                        "first_paragraph",
+                        "focus",
+                    ],
+                    "description": "Optional fallback scope if the requested scope is empty",
+                },
+                "max_blocks": {
+                    "type": "integer",
+                    "description": "Maximum number of content blocks to include when extracting page text",
+                },
+                "max_chars": {
+                    "type": "integer",
+                    "description": "Maximum number of characters to return",
+                },
+            },
+            "required": [],
+        },
     },
     {
         "name": "browser_query",
@@ -275,15 +325,15 @@ TOOLS = [
     {
         "name": "spotify_play",
         "description": (
-            "Search for and play a track, artist, album, or playlist on Spotify. "
-            "Handles the full search and click automatically — no follow-up action needed."
+            "Play the currently hardcoded Spotify track URI. "
+            "The query field is retained only for compatibility with existing callers."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Search query, e.g. 'Bohemian Rhapsody', 'Taylor Swift', 'Chill playlist'",
+                    "description": "Ignored. Retained for compatibility with existing callers.",
                 },
             },
             "required": ["query"],

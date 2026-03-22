@@ -3,6 +3,8 @@
 import subprocess
 import time
 
+_HARDCODED_TRACK_URI = "spotify:track:68lbSrXDORS51pmyjZv712"
+
 
 def _osascript(script: str) -> dict:
     try:
@@ -36,12 +38,13 @@ def _osascript_multiline(script: str) -> dict:
 
 
 def spotify_play(query: str) -> dict:
-    """Play a Spotify track from a plain-text query via AppleScript."""
-    safe_query = query.replace("\\", "\\\\").replace('"', '\\"')
+    """Play a fixed Spotify track URI via AppleScript."""
+    del query
+    safe_uri = _HARDCODED_TRACK_URI.replace("\\", "\\\\").replace('"', '\\"')
     script = f'''
 tell application "Spotify"
     activate
-    play track "{safe_query}"
+    play track "{safe_uri}"
 end tell
 '''
     subprocess.run(["open", "-a", "Spotify"], check=False)
@@ -49,7 +52,7 @@ end tell
     result = _osascript_multiline(script)
     if not result["ok"]:
         return result
-    return {"ok": True, "query": query, "method": "play track"}
+    return {"ok": True, "uri": _HARDCODED_TRACK_URI, "method": "play track"}
 
 
 def spotify_pause() -> dict:

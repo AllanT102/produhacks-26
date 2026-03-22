@@ -6,20 +6,50 @@ import os
 import queue
 import sys
 import threading
+import time
 from typing import Any, Dict
 
 from src.agent.command_text import canonicalize_command_text
 from src.agent.controller import AgentController
 from src.agent.loop import run_agent_loop
 from src.shared.events import AgentCommand, TranscriptEvent, UIEvent
+from src.shared.speech_output import should_suppress_transcripts
 from src.transcription.backend import FasterWhisperBackend, MockTranscriptionBackend
 from src.transcription.elevenlabs_realtime import (
     ElevenLabsRealtimeConfig,
     ElevenLabsRealtimeTranscriptionService,
 )
+from src.transcription.dispatcher import dispatch_transcript
 from src.transcription.mic_capture import SoundDeviceMicrophone
 from src.transcription.segmenter import SegmenterConfig, UtteranceSegmenter
 from src.transcription.service import TranscriptionService
+
+
+def should_prewarm_browser_use() -> bool:
+    """Return whether the app should warm the browser-use server on startup."""
+    if os.getenv("BROWSER_USE_ENABLED", "1").strip().lower() in {"0", "false", "no"}:
+        return False
+    try:
+        from src.agent.browser_use_backend import browser_use_available
+    except Exception:
+        return False
+    return browser_use_available()
+
+
+async def prewarm_browser_use() -> None:
+    """Warm the browser-use server outside the first user command."""
+    try:
+        from src.agent.browser_use_backend import prewarm_browser_use_server
+    except Exception as exc:
+        print(f"[prewarm] browser-use unavailable: {exc}")
+        return
+
+    started_at = time.perf_counter()
+    try:
+        await prewarm_browser_use_server()
+        print("[timing] browser-use prewarm took {:.1f}ms".format((time.perf_counter() - started_at) * 1000.0))
+    except Exception as exc:
+        print(f"[prewarm] browser-use failed: {exc}")
 
 
 def publish_ui_event(event_queue: "queue.Queue[UIEvent]", event_type: str, payload: dict) -> None:
@@ -39,6 +69,8 @@ def clear_agent_queue(agent_queue: "asyncio.Queue[AgentCommand]") -> None:
 
 async def log_event(event: TranscriptEvent, event_queue: "queue.Queue[UIEvent]") -> None:
     """Print transcript events for local debugging and update the overlay."""
+    if should_suppress_transcripts(event.source):
+        return
     normalized_text = canonicalize_command_text(event.text)
     print("[{}] {}".format(event.type, normalized_text))
     publish_ui_event(
@@ -151,26 +183,19 @@ def main() -> None:
         normalized = canonicalize_command_text(text)
         if not normalized:
             return
+        source = "wispr" if wispr_mode else ("typed" if type_mode else ("fake_transcript" if fake_transcript else "microphone"))
         event = TranscriptEvent(
             type="final",
             transcript_id=transcript_id,
             text=normalized,
             timestamp=0.0,
-            source="wispr" if wispr_mode else ("typed" if text_input_mode else "microphone"),
+            source=source,
         )
         await log_event(event, ui_queue)
-        await shared["agent_queue"].put(
-            AgentCommand(
-                transcript_id=event.transcript_id,
-                text=event.text,
-                metadata={
-                    "source": (
-                        "wispr"
-                        if wispr_mode
-                        else ("typed" if text_input_mode else "fake_transcript")
-                    )
-                },
-            )
+        await dispatch_transcript(
+            event,
+            shared["agent_queue"],
+            metadata={"source": source},
         )
 
     def queue_overlay_text(text: str) -> None:
@@ -192,6 +217,27 @@ def main() -> None:
             shared["agent_queue"] = agent_queue
             shared["controller"] = controller
 
+            loop_ready.set()
+
+            consumer_task = asyncio.create_task(
+                run_agent_loop(
+                    agent_queue,
+                    controller=controller,
+                    on_status=lambda state, detail: handle_agent_status(state, detail, ui_queue),
+                )
+            )
+
+            if should_prewarm_browser_use() and not text_input_mode and not fake_transcript:
+                publish_ui_event(
+                    ui_queue,
+                    "agent_status",
+                    {
+                        "state": "warming",
+                        "detail": "Preparing browser",
+                    },
+                )
+                await prewarm_browser_use()
+
             publish_ui_event(
                 ui_queue,
                 "agent_status",
@@ -203,16 +249,6 @@ def main() -> None:
                         else ("Type mode" if text_input_mode else ("Typed test mode" if fake_transcript else "Mic live"))
                     ),
                 },
-            )
-
-            loop_ready.set()
-
-            consumer_task = asyncio.create_task(
-                run_agent_loop(
-                    agent_queue,
-                    controller=controller,
-                    on_status=lambda state, detail: handle_agent_status(state, detail, ui_queue),
-                )
             )
 
             service = None

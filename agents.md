@@ -2,255 +2,207 @@
 
 ## Goal
 
-Build a voice-driven Mac control system that feels immediate in the common case and still general enough to control arbitrary desktop and browser workflows.
+Build a voice-driven Mac control system that can:
 
-The system should not depend on site-specific hardcoded flows for normal operation. It should rely on:
+- listen continuously
+- transcribe speech into short commands
+- show clear UI feedback while the system is active
+- execute browser and desktop actions
 
-- a fast transcription layer
-- a lightweight command router
-- a general planner over tools
-- a deterministic executor
+The first-class demo is browser control on macOS, especially YouTube-style flows, but the current implementation is best understood as a browser-first agent loop rather than a full general desktop agent.
 
-## Current Reality
+## Current System
 
-The main usability problem is latency, not capability.
+The current codebase is simpler than the original architecture sketch.
 
-A voice control loop feels broken if:
+Today the main runtime is:
 
-- the first action starts after 5 to 20 seconds
-- every browser command launches a separate automation browser session
-- the planner spends multiple expensive LLM rounds discovering obvious actions
+1. transcription runtime
+2. finalized transcript handoff
+3. single agent loop
+4. browser-use planner/backend
+5. overlay feedback
 
-The architecture should therefore optimize for:
+There is not currently a separate lightweight command router in the main execution path.
 
-1. fast first action
-2. generic tool use
-3. minimal planner rounds
-4. deterministic execution
-
-## Recommended System Shape
+## Current Flow
 
 ### 0. Transcription Runtime
+
+Supported backends:
+
+- local `faster-whisper`
+- ElevenLabs realtime STT over WebSockets
 
 Responsibilities:
 
 - capture microphone audio continuously
-- emit partial transcripts for UI only
+- emit partial transcripts for UI/debug feedback
 - emit final transcripts for execution
-- hand final transcripts to the command router
+- forward final transcripts into the agent queue
 
-This layer should not decide what action to take.
+Important current behavior:
 
-### 1. Command Router
+- partial transcripts are visible but are not executed
+- only final transcripts go into the agent loop
+- a short duplicate suppression window prevents the same finalized transcript from being executed repeatedly
+
+### 1. Agent Loop
+
+The agent loop is currently very thin.
 
 Responsibilities:
 
-- classify the utterance quickly
-- decide whether the command is:
-  - a direct primitive
-  - a browser task
-  - a desktop task
-  - a planner task
-- choose the cheapest valid execution path
+- consume finalized `AgentCommand` items
+- update the overlay state (`Listening`, `Tinkering`, `Ready`, `Stopped`, `Error`)
+- call the planner
+- support stop/cancel through `AgentController`
 
-This layer should be fast and shallow. It is not a full planner.
+The loop does not currently do:
 
-Examples of direct primitives:
-
-- `stop`
-- `scroll down`
-- `scroll up`
-- `pause`
-- `open chrome`
-- `open youtube.com`
-- `volume up`
-- `brightness down`
-
-These are generic commands, not app-specific hacks.
+- fast routing for trivial commands
+- multi-step local desktop planning
+- structured inspect/act/verify over screenshots
 
 ### 2. Planner
 
-Responsibilities:
-
-- interpret non-trivial commands
-- inspect screen and browser state
-- choose the next tool call
-- verify outcomes
-- stop as soon as the goal is achieved
-
-The planner should stay generic.
-
-It should not contain lots of:
-
-- YouTube-specific flows
-- LinkedIn-specific flows
-- one-off scripted action chains
-
-Those make demos look good briefly but do not scale to a real computer-use agent.
-
-### 3. Executor
+The current planner is effectively a browser-use adapter.
 
 Responsibilities:
 
-- run desktop and browser tools
-- return structured results
-- handle clicks, typing, scrolling, key presses, screenshots, and browser DOM actions
+- decide whether browser-use is available
+- route the command into the warm browser-use backend
+- return the resulting summary
 
-This layer should be deterministic and fast.
+This means the current planner is not a general reasoning layer over a stable local tool API. It is mostly a wrapper around a persistent browser-use session.
 
-## Browser Strategy
+### 3. Browser Backend
 
-There should be two browser paths:
+The current browser backend uses a warm persistent browser-use server.
 
-### Local Browser Tools
+It:
 
-Default path.
+- keeps a browser-use server process alive
+- reuses browser state across commands
+- can attach to a Chrome CDP session if configured
+- tries a direct browser helper path first
+- falls back to a browser-use agent path when the direct helper cannot handle the command
 
-Use:
+This fallback is the main source of high latency.
 
-- `open_app`
-- `browser_get_page`
-- `browser_query`
-- `browser_click_ref`
-- `browser_fill_ref`
-- `browser_scroll_to_text`
+## What Is Actually Slow
 
-This path should reuse the user’s existing Chrome app and tabs through normal macOS behavior and Chrome Apple Events.
+The biggest latency source right now is browser-use agent fallback, not the overlay and not transcript transport.
 
-### Browser-Use Backend
+When a command misses the direct browser helper and falls into the browser-use agent path, the system can spend tens of seconds in one command.
 
-Optional path only.
+Typical expensive path:
 
-Use only when explicitly enabled or when running controlled experiments.
+1. final transcript arrives
+2. agent loop hands it to planner
+3. planner routes into browser-use
+4. browser-use direct helper cannot handle the utterance
+5. browser-use agent fallback runs against Anthropic
+6. result returns after several seconds or tens of seconds
 
-It should not be the default path for normal voice control because it can add:
+That is why the loop can feel unusable even when transcription itself is working.
 
-- startup latency
-- separate browser automation state
-- a less natural user experience
+## Current Failure Modes
 
-## Are We Currently Using Browser-Use?
+### 1. Browser-use fallback is too slow
 
-Not by default.
+Open-ended commands can be reasonable.
 
-In the current code:
+Simple commands can still become expensive if the command parser misses them and falls through to the full browser-use agent path.
 
-- `browser-use` is only considered when `BROWSER_USE_ENABLED=1`
-- with `BROWSER_USE_ENABLED=0`, the app should stay on the local browser/tool path
+### 2. Transcript wording is noisy
 
-So if the loop is still slow with `BROWSER_USE_ENABLED=0`, that slowness is coming from the planner model and planner round-trip, not from `browser-use`.
+Even with ElevenLabs, natural speech can produce:
 
-## Why The Current Loop Feels Slow
+- repeated phrasing
+- background chatter
+- imperfect proper nouns
 
-The main bottleneck is the planner round itself.
+If a bad final transcript is committed, the current system still tries to execute it.
 
-A typical slow path looks like:
+### 3. The system is browser-first, not truly general yet
 
-1. transcript arrives
-2. planner takes a screenshot
-3. planner sends a full LLM request
-4. LLM thinks for several seconds
-5. planner takes one action
-6. planner sends another full LLM request
+The current architecture can control a browser well enough for demos, but it is not yet a mature desktop agent with robust screenshot-grounded action selection.
 
-That is too expensive for voice control.
+## Current Architecture Boundaries
 
-## Make The Loop Usable
+What the system is today:
 
-### 1. Add a real fast router
+- a transcription layer
+- a queue-based command handoff
+- a browser-first execution agent
+- an overlay UI for state feedback
 
-Before the planner, route obvious commands directly.
+What the system is not yet:
 
-Good direct routes:
+- a full planner over local Mac action primitives
+- a reliable screenshot-grounded desktop manipulation loop
+- a generalized executor for arbitrary Mac UI tasks
 
-- stop/cancel
-- open app
-- open URL
-- simple scroll
-- simple media keys
-- simple brightness and volume commands
+## Browser-Use Status
 
-This removes many LLM calls entirely.
+Browser-use is currently central to the execution path when enabled.
 
-### 2. Keep the planner generic
+If `BROWSER_USE_ENABLED=1`:
 
-Do not solve latency by hardcoding app-specific flows.
+- finalized commands route into the browser-use-backed planner
+- direct browser helper logic may handle some commands quickly
+- anything unsupported falls back to the slower agent path
 
-Instead:
+If `BROWSER_USE_ENABLED=0`:
 
-- improve the browser tools
-- improve the planner prompt
-- lower planner latency
-- reduce the number of planner rounds
+- the current planner returns that browser-use is unavailable
+- there is no equivalent full local planner path at the moment
 
-### 3. Use a fast planner profile first
+So, in the current repo, browser-use is not just an experiment. It is effectively the main planner backend when enabled.
 
-Default planner behavior should be:
+## Overlay State Model
 
-- fast model
-- low token budget
-- small iteration budget
+The overlay should behave like this:
 
-Then only escalate to a stronger model if the fast attempt stalls.
+1. `Listening`
+2. partial transcript expands the pill
+3. final transcript arrives
+4. `Tinkering` while the agent is executing
+5. `Ready`
+6. back to `Listening`
 
-### 4. Reduce planner rounds
+Transient states:
 
-The planner should aim for:
+- `Stopped`
+- `Error`
 
-- 0 LLM rounds for direct commands
-- 1 to 2 LLM rounds for common browser tasks
-- more only when genuinely necessary
+These should settle back to `Listening` after a short delay.
 
-### 5. Improve tool grounding
-
-The planner gets slow when the tools are weak.
-
-The best way to speed it up is not just changing models, but giving it better primitives:
-
-- reliable browser DOM querying
-- direct browser field fill
-- direct browser link click
-- browser page metadata
-- direct app open and URL open
-- propose-targets for desktop UI
-
-Better tools mean fewer planner turns.
-
-## Practical Latency Budget
-
-For a usable voice experience:
-
-- transcript finalization: under 1s after speech ends
-- direct command execution start: under 300ms
-- planner-based action start: ideally under 2s
-- browser-use path: opt-in only, because it may be much slower
-
-If a path consistently starts acting after 5s or more, it should not be the default.
-
-## Recommended Loop
-
-1. user speaks
-2. transcription runtime emits final transcript
-3. command router classifies the request
-4. if direct primitive:
-   execute immediately
-5. otherwise:
-   run planner on current browser or desktop state
-6. executor performs tool call
-7. planner verifies result
-8. stop as soon as goal is satisfied
-
-## What To Build Next
+## What Needs To Improve Next
 
 Priority order:
 
-1. generic direct-command router
-2. stronger browser primitives
-3. faster default planner profile
-4. deep fallback only when needed
-5. keep browser-use behind an explicit flag
+1. make browser-use fallback rarer
+2. make browser commands more structured before they reach browser-use
+3. improve transcript quality and command normalization
+4. restore a real local planner/executor path if the goal is general Mac control
+5. keep the overlay quiet and trustworthy
 
-This is the version of the architecture that is both:
+## Recommended Near-Term Direction
 
-- realistic for a general computer-use agent
-- fast enough to feel usable in a voice interface
+If the goal is a usable hackathon demo, the highest-leverage path is:
+
+1. keep ElevenLabs for transcription
+2. keep the warm browser-use backend
+3. improve browser command parsing so obvious commands do not hit the expensive fallback
+4. document clearly that the current product is browser-first
+
+If the goal is a true general computer-use agent, then the architecture needs to move back toward:
+
+- planner over stable tool primitives
+- local executor
+- screenshot/accessibility grounding
+- inspect/act/verify loops
+
+That is not the current state of the repo, and this document should reflect that honestly.

@@ -6,6 +6,7 @@ from src.tool_runtime.tools.mouse import drag, move_to
 from src.tool_runtime.tools.app import open_app
 from src.tool_runtime.tools.browser import (
     browser_click_ref,
+    browser_extract_text,
     browser_fill_ref,
     browser_get_page,
     browser_query,
@@ -39,6 +40,7 @@ REGISTRY: dict = {
     "set_brightness": set_brightness,
     "open_app": open_app,
     "browser_get_page": browser_get_page,
+    "browser_extract_text": browser_extract_text,
     "browser_query": browser_query,
     "browser_scroll_to_text": browser_scroll_to_text,
     "browser_click_ref": browser_click_ref,

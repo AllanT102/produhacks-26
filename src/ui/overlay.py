@@ -3,6 +3,7 @@
 import math
 import queue
 import time
+import warnings
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -32,6 +33,8 @@ except ImportError as exc:
         "PyObjC is required for the desktop overlay. Install requirements.txt again."
     ) from exc
 
+warnings.filterwarnings("ignore", message="PyObjCPointer created:.*")
+
 
 STATUS_STYLES = {
     "listening": {
@@ -47,6 +50,20 @@ STATUS_STYLES = {
         "label": "Tinkering",
         "chip": (0.24, 0.31, 0.40),
         "chip_alpha": 0.68,
+    },
+    "warming": {
+        "dot": (0.98, 0.74, 0.42),
+        "line": (1.00, 0.79, 0.49),
+        "label": "Not Ready",
+        "chip": (0.39, 0.28, 0.16),
+        "chip_alpha": 0.74,
+    },
+    "speaking": {
+        "dot": (0.98, 0.74, 0.42),
+        "line": (1.00, 0.79, 0.49),
+        "label": "Speaking",
+        "chip": (0.43, 0.31, 0.18),
+        "chip_alpha": 0.72,
     },
     "idle": {
         "dot": (0.56, 0.72, 0.96),
@@ -202,6 +219,19 @@ class VoiceOverlay:
         self.dot.setWantsLayer_(True)
         self.dot.layer().setCornerRadius_(4.0)
         self.status_chip.addSubview_(self.dot)
+
+        self.status_symbol_label = NSTextField.alloc().initWithFrame_(NSMakeRect(8, 3, 16, 18))
+        self.status_symbol_label.setBezeled_(False)
+        self.status_symbol_label.setDrawsBackground_(False)
+        self.status_symbol_label.setEditable_(False)
+        self.status_symbol_label.setSelectable_(False)
+        self.status_symbol_label.setFont_(self._monospaced_font(12, bold=True))
+        self.status_symbol_label.setTextColor_(
+            NSColor.colorWithCalibratedRed_green_blue_alpha_(0.92, 0.78, 0.58, 1.0)
+        )
+        self.status_symbol_label.setAlignment_(1)
+        self.status_symbol_label.setHidden_(True)
+        self.status_chip.addSubview_(self.status_symbol_label)
 
         self.status_label = NSTextField.alloc().initWithFrame_(NSMakeRect(28, 2, 76, 18))
         self.status_label.setBezeled_(False)
@@ -416,6 +446,14 @@ class VoiceOverlay:
         self.dot_halo.layer().setBackgroundColor_(
             NSColor.colorWithCalibratedRed_green_blue_alpha_(red, green, blue, 0.18).CGColor()
         )
+        if self.state.status == "processing":
+            self.status_symbol_label.setHidden_(False)
+            self.status_symbol_label.setStringValue_(PROCESSING_GLYPHS[self._processing_glyph_index])
+            self.dot.setHidden_(True)
+        else:
+            self.status_symbol_label.setHidden_(True)
+            self.status_symbol_label.setStringValue_("")
+            self.dot.setHidden_(False)
         self.status_label.setStringValue_(style["label"])
         self.transcript_label.setStringValue_(self.state.transcript)
         self.placeholder_label.setHidden_(bool(self.state.transcript))
@@ -453,6 +491,48 @@ class VoiceOverlay:
                 ).CGColor()
             )
             self.activity_glow.setAlphaValue_(0.52 + (phase * 0.18))
+        elif self.state.status == "warming":
+            self._processing_active = False
+            phase = (math.sin(self._pulse_tick / 6.0) + 1.0) / 2.0
+            scale = 14.0 + (phase * 2.0)
+            origin = 8.0 - ((scale - 16.0) / 2.0)
+            self.dot_halo.setFrame_(NSMakeRect(origin, origin, scale, scale))
+            self.dot_halo.layer().setCornerRadius_(scale / 2.0)
+            self.dot_halo.setAlphaValue_(0.14 + (phase * 0.10))
+            width = 82.0 + (phase * 18.0)
+            x = (content_width - width) / 2.0
+            self.activity_glow.setFrame_(NSMakeRect(x, content_height - 8.0, width, 3.0))
+            self.activity_glow.layer().setCornerRadius_(1.5)
+            self.activity_glow.layer().setBackgroundColor_(
+                NSColor.colorWithCalibratedRed_green_blue_alpha_(
+                    line_red,
+                    line_green,
+                    line_blue,
+                    0.74,
+                ).CGColor()
+            )
+            self.activity_glow.setAlphaValue_(0.28 + (phase * 0.12))
+        elif self.state.status == "speaking":
+            self._processing_active = False
+            phase = (math.sin(self._pulse_tick / 5.2) + 1.0) / 2.0
+            scale = 15.0 + (phase * 3.0)
+            origin = 8.0 - ((scale - 16.0) / 2.0)
+            self.dot_halo.setFrame_(NSMakeRect(origin, origin, scale, scale))
+            self.dot_halo.layer().setCornerRadius_(scale / 2.0)
+            self.dot_halo.setAlphaValue_(0.18 + (phase * 0.10))
+            width = 74.0 + (phase * 26.0)
+            x = (content_width - width) / 2.0
+            self.activity_glow.setFrame_(NSMakeRect(x, content_height - 8.0, width, 3.0))
+            self.activity_glow.layer().setCornerRadius_(1.5)
+            self.activity_glow.layer().setBackgroundColor_(
+                NSColor.colorWithCalibratedRed_green_blue_alpha_(
+                    line_red,
+                    line_green,
+                    line_blue,
+                    0.72,
+                ).CGColor()
+            )
+            self.activity_glow.setAlphaValue_(0.28 + (phase * 0.12))
         else:
             self._processing_active = False
             self.dot_halo.setAlphaValue_(0.0)
@@ -476,11 +556,11 @@ class VoiceOverlay:
 
     def _is_expanded_state(self) -> bool:
         """Return whether the overlay should be expanded."""
-        return self.state.status in ("processing", "stopped", "error") or bool(self.state.transcript)
+        return self.state.status in ("processing", "warming", "speaking", "stopped", "error") or bool(self.state.transcript)
 
     def _maybe_compact(self) -> None:
         """Collapse the overlay after a brief quiet period."""
-        if self.state.status == "processing":
+        if self.state.status in ("processing", "warming", "speaking"):
             return
         quiet_for = time.time() - self._last_activity_at
         if self.state.status == "idle" and quiet_for > self._READY_SETTLE_SECONDS:
@@ -547,7 +627,7 @@ class VoiceOverlay:
         self.placeholder_label.setFrame_(NSMakeRect(22, 24, 260, 22))
         self.stop_button.setFrame_(NSMakeRect(346, 66, 70, 28))
         self.quit_button.setFrame_(NSMakeRect(424, 66, 28, 28))
-        self.stop_button.setHidden_(self.state.status != "processing")
+        self.stop_button.setHidden_(self.state.status not in ("processing", "speaking"))
         self.quit_button.setHidden_(False)
         self.detail_label.setHidden_(False)
         self.placeholder_label.setHidden_(bool(self.state.transcript))
@@ -557,7 +637,7 @@ class VoiceOverlay:
         self.status_chip.setFrame_(NSMakeRect(18, 88, 122, 24))
         self.stop_button.setFrame_(NSMakeRect(348, 84, 72, 30))
         self.quit_button.setFrame_(NSMakeRect(428, 84, 28, 30))
-        self.stop_button.setHidden_(self.state.status != "processing")
+        self.stop_button.setHidden_(self.state.status not in ("processing", "speaking"))
         self.quit_button.setHidden_(False)
 
         self.transcript_label.setFrame_(NSMakeRect(24, 56, 424, 20))
@@ -596,11 +676,11 @@ class VoiceOverlay:
     def _apply_detail_copy(self) -> None:
         """Render the compact status copy or the Claude-like processing phrase."""
         if self.state.status == "processing":
-            self.detail_symbol_label.setHidden_(False)
-            self.detail_symbol_label.setStringValue_(PROCESSING_GLYPHS[self._processing_glyph_index])
-            self.detail_label.setStringValue_("Tinkering…")
+            self.detail_symbol_label.setHidden_(True)
+            self.detail_symbol_label.setStringValue_("")
+            self.detail_label.setStringValue_("")
             self.detail_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(0.70, 1.0))
-            self.detail_label.setFrame_(NSMakeRect(164, 70, 120, 16))
+            self.detail_label.setFrame_(NSMakeRect(164, 70, 0, 16))
             return
 
         self.detail_symbol_label.setHidden_(True)
@@ -629,8 +709,9 @@ class VoiceOverlay:
         if not self.wispr_mode or self.command_input is None or self.input_hint_label is None:
             return
         has_text = bool(str(self.command_input.stringValue() or "").strip())
-        self.input_hint_label.setHidden_(has_text or self.state.status == "processing")
-        if self.state.status != "processing":
+        busy = self.state.status in ("processing", "warming", "speaking")
+        self.input_hint_label.setHidden_(has_text or busy)
+        if not busy:
             self.window.makeFirstResponder_(self.command_input)
 
     def _return_to_listening(self, clear_transcript: bool) -> None:

@@ -42,7 +42,7 @@ The transcription layer now includes:
 
 The app now opens a small always-on-top desktop overlay that shows:
 
-- whether the system is listening, thinking, ready, or stopped
+- whether the system is listening, thinking, speaking, ready, or stopped
 - the latest transcript text
 - a `Stop` button that cancels the current agent run
 
@@ -197,6 +197,7 @@ By default, browser commands now use the local macOS + Chrome tool path:
 
 - `open_app` uses `open -a`, which reuses the existing app instance
 - Chrome interactions use the Apple Events browser tools in `src/tool_runtime/tools/browser.py`
+- explicit `read ...` voice commands use a direct page-text extraction path and ElevenLabs TTS instead of browser-use fallback when `ELEVENLABS_API_KEY` is available
 
 The heavier `browser-use` backend is now opt-in only. To enable it explicitly:
 
@@ -229,6 +230,33 @@ With that setup:
 - follow-up browser commands can reuse the same browser context
 
 This is the best path if you want Browser Use for high-level navigation while still keeping a more natural browser experience.
+
+## Read Aloud
+
+The agent can now speak page content back to you, but only for explicit readback commands. Supported command shapes include:
+
+- `read this page aloud`
+- `read this to me`
+- `read the selected text`
+- `read the title`
+- `read the first paragraph`
+
+Current behavior:
+
+- readback is handled before browser-use, so it stays on a fast direct path
+- text is extracted from the active Google Chrome tab
+- the overlay switches to `Speaking` while TTS is running
+- live microphone transcripts are suppressed during speech, plus a short cooldown, to avoid the agent transcribing itself
+
+Notes:
+
+- `read this` prefers the current text selection and falls back to the top of the page if nothing is selected
+- full pages are trimmed to the beginning instead of reading arbitrarily long content forever
+- Chrome still needs `Allow JavaScript from Apple Events` enabled for the browser extraction helpers to work
+- TTS defaults to ElevenLabs when `ELEVENLABS_API_KEY` is set; override with `AGENT_TTS_PROVIDER=say` if you explicitly want the macOS fallback
+- you can override the voice with `ELEVENLABS_TTS_VOICE_ID` or `ELEVENLABS_TTS_VOICE_NAME`
+- speech speed defaults slightly faster than normal; tune it with `ELEVENLABS_TTS_SPEED` such as `1.2`
+- `Stop` cancels the current readback, including active playback and best-effort in-flight ElevenLabs synthesis
 
 ## Planner Speed
 

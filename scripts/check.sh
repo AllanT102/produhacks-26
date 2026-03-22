@@ -14,7 +14,9 @@ python3 -m py_compile \
   src/agent/loop.py \
   src/agent/mock_executor.py \
   src/agent/planner.py \
+  src/agent/read_aloud.py \
   src/shared/events.py \
+  src/shared/speech_output.py \
   src/ui/overlay.py \
   src/transcription/backend.py \
   src/transcription/dispatcher.py \
